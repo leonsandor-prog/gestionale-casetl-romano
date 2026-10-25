@@ -4,32 +4,10 @@ import sqlite3
 import os
 from datetime import datetime, timedelta
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
 
 DB_PATH = "castel_romano.db"
 EXCEL_PATH = "dati con unita.xlsx"
-
-def set_cell_background(cell, fill_hex):
-    tcPr = cell._element.get_or_add_tcPr()
-    shd = OxmlElement('w:shd')
-    shd.set(qn('w:val'), 'clear')
-    shd.set(qn('w:color'), 'auto')
-    shd.set(qn('w:fill'), fill_hex)
-    tcPr.append(shd)
-
-def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
-    tcPr = cell._element.get_or_add_tcPr()
-    tcMar = OxmlElement('w:tcMar')
-    for m, val in [('top', top), ('bottom', bottom), ('left', left), ('right', right)]:
-        node = OxmlElement(f'w:{m}')
-        node.set(qn('w:w'), str(val))
-        node.set(qn('w:type'), 'dxa')
-        tcMar.append(node)
-    tcPr.append(tcMar)
+TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
 
 def init_db_mappa():
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
@@ -124,6 +102,20 @@ def init_db_mappa():
     finally:
         conn.close()
 
+def sostituisci_testo_docx(doc, mappa_sostituzioni):
+    for p in doc.paragraphs:
+        for chiave, valore in mappa_sostituzioni.items():
+            if chiave in p.text:
+                p.text = p.text.replace(chiave, str(valore))
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for chiave, valore in mappa_sostituzioni.items():
+                        if chiave in p.text:
+                            p.text = p.text.replace(chiave, str(valore))
+
 init_db_mappa()
 
 st.set_page_config(page_title="Gestione F-GAS & Manutenzione Castel Romano", layout="wide")
@@ -149,12 +141,7 @@ for idx, zona in enumerate(macro_aree_disponibili):
     ha_scadenze = "SCADUTO" in df_zona_check['stato_scadenza'].values
     ha_filtri_pendenti = "Da Sostituire" in df_zona_check['stato_pulizia'].values
     
-    if ha_scadenze:
-        icona_stato = "🔴 [Scadenze F-GAS Attive]"
-    elif ha_filtri_pendenti:
-        icona_stato = "🟠 [Attenzione: Filtri da Sostituire]"
-    else:
-        icona_stato = "🟢 [Regolare]"
+    icona_stato = "🔴 [Scadenze F-GAS Attive]" if ha_scadenze else ("🟠 [Filtri da Sostituire]" if ha_filtri_pendenti else "🟢 [Regolare]")
     
     with cols_grid[idx % 2]:
         with st.container(border=True):
@@ -179,7 +166,6 @@ unita_nella_zona = sorted(df_corrente['unita_base'].unique(), key=lambda x: int(
 if not unita_nella_zona:
     st.info("Nessuna unità trovata in questa area.")
 else:
-    st.markdown("**Seleziona l'Unità / Negozio rapido:**")
     cols_unita = st.columns(min(len(unita_nella_zona), 6))
     
     if 'unita_selezionata' not in st.session_state:
@@ -233,29 +219,24 @@ else:
                 
             st.markdown("---")
             
-            tab_fgas, tab_filtri = st.tabs(["❄️ 1. Report Ufficiale F-GAS (CBRE)", "🧹 2. Rapportino Manutenzione Filtri"])
+            tab_fgas, tab_filtri = st.tabs(["❄️ 1. Compila Modello Modello F-GAS (CBRE)", "🧹 2. Rapportino Manutenzione Filtri"])
             
-            # --- TAB 1: REPORT UFFICIALE F-GAS ---
+            # --- TAB 1: COMPILAZIONE MODELLO UFFICIALE F-GAS ---
             with tab_fgas:
                 with st.form(key=f"form_fgas_{matricola_str}"):
-                    st.markdown("##### 📝 Controllo Periodico F-GAS (Modello 12-00.646.GWS-IT)")
-                    
-                    tipo_funzione = st.radio("Funzione Prevalente", ["Condizionamento", "Pompa di Calore", "Refrigerazione", "Antincendio"], index=0, key=f"func_{matricola_str}")
-                    num_circuiti = st.number_input("N° Circuiti Impianto", min_value=1, max_value=4, value=1, key=f"circ_num_{matricola_str}")
-                    ermetico = st.radio("Ermeticamente Sigillato?", ["NO", "SI"], index=0, key=f"erm_{matricola_str}")
-                    metodo_cerca = st.radio("Metodo Cercafughe", ["Diretto", "Indiretto"], index=0, key=f"metodo_{matricola_str}")
+                    st.markdown("##### 📝 Controllo Periodico F-GAS su Modello Modello Originale CBRE")
                     
                     esito_circ1 = st.selectbox("Esito Circuito 1", ["Assenza Perdite", "Rilevata Perdita"], key=f"es1_{matricola_str}")
-                    note_fgas = st.text_input("Note Tecniche F-GAS", "Controllo periodico eseguito con esito regolare.", key=f"note_fgas_{matricola_str}")
+                    note_fgas = st.text_input("Note Tecniche / Causa ed Azioni", "Controllo periodico eseguito con esito regolare.", key=f"note_fgas_{matricola_str}")
                     
-                    btn_fgas_submit = st.form_submit_button("✅ Salva & Genera Word F-GAS Ufficiale")
+                    btn_fgas_submit = st.form_submit_button("✅ Compila & Genera Modello Word Ufficiale CBRE")
                     
                     if btn_fgas_submit:
-                        conn_up = sqlite3.connect(DB_PATH, timeout=10.0)
-                        cursor_up = conn_up.cursor()
                         dt_oggi = datetime.now()
                         dt_scad_nuova = dt_oggi + timedelta(days=30)
                         
+                        conn_up = sqlite3.connect(DB_PATH, timeout=10.0)
+                        cursor_up = conn_up.cursor()
                         cursor_up.execute('''
                             UPDATE manutenzione_impianti 
                             SET data_ultima_manutenzione = ?,
@@ -266,59 +247,54 @@ else:
                         conn_up.commit()
                         conn_up.close()
                         
-                        # Generazione Modello Word Ufficiale CBRE F-GAS
-                        doc = Document()
-                        for s in doc.sections:
-                            s.top_margin = Inches(0.4)
-                            s.bottom_margin = Inches(0.4)
-                            s.left_margin = Inches(0.5)
-                            s.right_margin = Inches(0.5)
-
-                        t_top = doc.add_table(rows=1, cols=3)
-                        t_top.alignment = WD_TABLE_ALIGNMENT.CENTER
-                        t_top.cell(0, 0).text = "CBRE"
-                        t_top.cell(0, 1).text = "12-00.646.GWS-IT - REPORT DI MANUTENZIONE APPARECCHIATURE F-GAS\nReg. 517/14 UE e DPR 146/2018 (Validità 30 gg)"
-                        t_top.cell(0, 2).text = f"N° Report:\n{cod_app_str}/2026\nData: {dt_oggi.strftime('%d/%m/%Y')}"
-
-                        doc.add_paragraph().paragraph_format.space_after = Pt(4)
-                        doc.add_paragraph(f"1. ESTREMI OPERATORE:\nRagione Sociale: BMG CASTELROMANO SRL — Indirizzo: VIA DEL PONTE DI PISCINA CUPA 64 (Unità: {row['unita']})\nMail: Letizia.Bianchetti@mcarthurglen.com")
-                        doc.add_paragraph(f"2. ESTREMI APPARECCHIATURA:\nMarca: {row['marca']} | Modello: {row['modello']} | Matricola: {matricola_str}\nGas: {row['tipo_refrigerante']} - Carica: {row['carica_kg']} Kg - CO2 eq: {row['tonn_co2_eq']} t")
-                        doc.add_paragraph(f"3. ESTREMI MANUTENTORE:\nCBRE TECHNICAL DIVISION (Cert. Azienda N°: 303310)\nTecnico: ANTONIO MARTINEZ (Cert. Tecnico N°: PR-0148807)")
-                        doc.add_paragraph(f"4. CONTROLLO PERDITE:\nControllo Periodico Eseguito — Metodo: {metodo_cerca} — Cercafughe: WIGAN ELD-H (Matr: 21020370BA, Sensibilità: 14 g/anno)\nEsito Circuito 1: {esito_circ1.upper()} — Note: {note_fgas}")
-
-                        safe_matr = matricola_str.replace('/', '_')
-                        filename_fgas = f"Report_FGAS_{row['marca']}_{safe_matr}.docx"
-                        doc.save(filename_fgas)
-                        st.session_state[f'dl_fgas_{matricola_str}'] = filename_fgas
-                        st.success("Report Ufficiale F-GAS generato con successo!")
-                        st.rerun()
+                        if os.path.exists(TEMPLATE_FGAS_PATH):
+                            doc = Document(TEMPLATE_FGAS_PATH)
+                            
+                            mappa_dati = {
+                                "{{UNITA}}": str(row['unita']),
+                                "{{MARCA}}": str(row['marca']),
+                                "{{MODELLO}}": str(row['modello']),
+                                "{{MATRICOLA}}": matricola_str,
+                                "{{TIPO_GAS}}": str(row['tipo_refrigerante']),
+                                "{{CARICA_KG}}": f"{row['carica_kg']} Kg",
+                                "{{CO2_EQ}}": f"{row['tonn_co2_eq']} t",
+                                "{{COD_APP}}": cod_app_str,
+                                "{{DATA_INTERVENTO}}": dt_oggi.strftime("%d/%m/%Y"),
+                                "{{ESITO_CIRC1}}": esito_circ1.upper(),
+                                "{{NOTE_FGAS}}": note_fgas
+                            }
+                            
+                            sostituisci_testo_docx(doc, mappa_dati)
+                            
+                            safe_matr = matricola_str.replace('/', '_')
+                            filename_fgas = f"Report_FGAS_{row['marca']}_{safe_matr}.docx"
+                            doc.save(filename_fgas)
+                            st.session_state[f'dl_fgas_{matricola_str}'] = filename_fgas
+                            st.success("Modulo Modello F-GAS compilato con successo!")
+                            st.rerun()
+                        else:
+                            st.error(f"⚠️ Attenzione: Il file modello '{TEMPLATE_FGAS_PATH}' non è stato trovato su GitHub. Verifica che si chiami esattamente così.")
 
                 if st.session_state.get(f'dl_fgas_{matricola_str}'):
                     f_fgas = st.session_state[f'dl_fgas_{matricola_str}']
                     if os.path.exists(f_fgas):
                         with open(f_fgas, "rb") as file_in:
-                            st.download_button(label=f"📥 Scarica Word Ufficiale F-GAS ({f_fgas})", data=file_in, file_name=f_fgas, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                            st.download_button(
+                                label=f"📥 Scarica Modulo Ufficiale CBRE Compilato ({f_fgas})",
+                                data=file_in,
+                                file_name=f_fgas,
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key=f"btn_dl_fgas_{matricola_str}"
+                            )
 
             # --- TAB 2: RAPPORTINO FILTRI ---
             with tab_filtri:
                 with st.form(key=f"form_filtri_{matricola_str}"):
                     st.markdown("##### 🧹 Rapportino Intervento Filtri & Manutenzione Ordinaria")
                     
-                    tipo_azione_filtri = st.selectbox(
-                        "Tipo di Intervento Eseguito", 
-                        ["Pulizia / Spolveratura Filtri", "Lavaggio Filtri & Sanificazione Vasca", "Sostituzione Filtri Nuovi", "Segnalato Filtro Da Ordinare"], 
-                        key=f"azione_f_{matricola_str}"
-                    )
-                    nuovo_stato_filtri = st.selectbox(
-                        "Stato Filtri Post-Intervento", 
-                        ["Pulito / Ottimale", "Buono", "Da Sostituire"], 
-                        key=f"stato_f_{matricola_str}"
-                    )
-                    note_filtri = st.text_input(
-                        "Note Tecniche Operative", 
-                        "Eseguita pulizia filtri, controllato il corretto scarico condensa e ripristinato il flusso d'aria.", 
-                        key=f"note_f_{matricola_str}"
-                    )
+                    tipo_azione_filtri = st.selectbox("Azione Eseguita", ["Pulizia / Spolveratura Filtri", "Lavaggio Filtri & Sanificazione Vasca", "Sostituzione Filtri Nuovi", "Segnalato Filtro Da Ordinare"], key=f"azione_f_{matricola_str}")
+                    nuovo_stato_filtri = st.selectbox("Stato Filtri Post-Intervento", ["Pulito / Ottimale", "Buono", "Da Sostituire"], key=f"stato_f_{matricola_str}")
+                    note_filtri = st.text_input("Note Tecniche Operative", "Eseguita pulizia filtri, controllato il corretto scarico condensa e ripristinato il flusso d'aria.", key=f"note_f_{matricola_str}")
                     
                     btn_filtri_submit = st.form_submit_button("✅ Salva Stato & Genera Rapportino Word")
                     
@@ -336,18 +312,7 @@ else:
                         conn_up.close()
                         
                         doc_f = Document()
-                        for s in doc_f.sections:
-                            s.top_margin = Inches(0.5)
-                            s.bottom_margin = Inches(0.5)
-                            s.left_margin = Inches(0.6)
-                            s.right_margin = Inches(0.6)
-                        
-                        t_head = doc_f.add_table(rows=1, cols=2)
-                        t_head.alignment = WD_TABLE_ALIGNMENT.CENTER
-                        t_head.cell(0, 0).text = "CBRE"
-                        t_head.cell(0, 1).text = "RAPPORTINO MANUTENZIONE FILTRI\n& INTERVENTO ORDINARIO"
-                        
-                        doc_f.add_paragraph().paragraph_format.space_after = Pt(6)
+                        doc_f.add_heading('RAPPORTINO MANUTENZIONE FILTRI & INTERVENTO ORDINARIO', level=1)
                         doc_f.add_paragraph(f"Sito: McArthurGlen Designer Outlet Castel Romano — Data: {dt_oggi.strftime('%d/%m/%Y %H:%M')}\nUnità / Negozio: {row['unita']} — Collocazione: {row['collocazione']}")
                         doc_f.add_paragraph(f"ESTREMI APPARECCHIATURA:\nCodice: {cod_app_str} | Marca/Modello: {row['marca']} {row['modello']} | Matricola: {matricola_str}")
                         doc_f.add_paragraph(f"DETTAGLI INTERVENTO:\nAzione: {tipo_azione_filtri} | Stato Post-Intervento: {nuovo_stato_filtri.upper()}\nTipologia Filtri: {row['tipo_filtro']} ({row['quantita_filtri']} pz, {row['misure_filtri']})\nNote: {note_filtri}")
