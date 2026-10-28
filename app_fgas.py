@@ -44,11 +44,7 @@ def init_db_mappa():
                 refrigerante TEXT,
                 codice_targa TEXT,
                 ultima_verifica TEXT,
-                scadenza_verifica TEXT,
-                stato_pulizia TEXT DEFAULT 'Buono',
-                tipo_filtro TEXT DEFAULT 'G4 Cella',
-                quantita_filtri INTEGER DEFAULT 2,
-                misure_filtri TEXT DEFAULT '592x592x48 mm'
+                scadenza_verifica TEXT
             )
         ''')
         
