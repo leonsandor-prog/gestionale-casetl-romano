@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -7,7 +6,7 @@ from datetime import datetime, timedelta
 from docx import Document
 
 DB_PATH = "castel_romano.db"
-EXCEL_PATH = "Registro_Master_Definitivo_Castel_Romano.xlsx"
+EXCEL_PATH = "Registro_Master_Unificato_Completo_Castel_Romano.xlsx"
 TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
 
 def init_db_mappa():
@@ -60,21 +59,10 @@ def init_db_mappa():
                 negozio = str(row.get("Ubicazione / Negozio", "")).strip()
                 quadro = str(row.get("Quadro / Interruttore (Planimetria)", "")).strip()
                 
-                # Assegnazione Macro-Area / Piazza in base al numero unità
-                num_unita_clean = nr_u.replace("A", "").replace("B", "").replace("C", "").split('/')[0].strip()
-                macro = "📍 Piazza di Augusto / Traiano"
-                if num_unita_clean.isdigit():
-                    n = int(num_unita_clean)
-                    if n >= 124 and n <= 134:
-                        macro = "🏛️ Piazza del Colosseo (Elefante)"
-                    elif n >= 110 and n <= 122:
-                        macro = "🦕 Piazza del Foro Romano (Dinosauro)"
-                    elif n >= 140 and n <= 184:
-                        macro = "🏺 Piazza di Caracalla / G. Cesare / Dino"
-                    elif n >= 31 and n <= 50:
-                        macro = "🐎 Piazza Tito / Costantino / Testa Cavallo"
-                    elif n < 31:
-                        macro = "⚡ Piazza Adriano / Locali Tecnici Coperture"
+                # Lettura diretta della Macro-Area / Piazza dal file Excel unificato
+                macro = str(row.get("Macro-Area / Piazza", "Piazza di Augusto / Traiano")).strip()
+                if not macro or macro == "nan":
+                    macro = "Piazza di Augusto / Traiano"
 
                 id_unic = f"{nr_u}_{negozio}_{quadro}"
                 
@@ -141,7 +129,6 @@ if menu == "🔍 Ricerca & Planimetria Impianti":
     df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
     conn.close()
 
-    # Barra di Ricerca Veloce Libera
     search_query = st.text_input("🔍 Ricerca rapida per Nome Negozio, Numero Unità o Marca (es. Levi's, 130, Trane):", "").strip().lower()
 
     st.markdown("---")
@@ -155,7 +142,6 @@ if menu == "🔍 Ricerca & Planimetria Impianti":
         ]
         st.subheader(f"🔎 Risultati della ricerca per '{search_query}': ({len(unita_filtrate)} macchine trovate)")
     else:
-        # Navigazione per Piazze / Macro-Aree
         tab_piazze, tab_quadri = st.tabs(["🏛️ Navigazione per Piazze / Mappa Centro", "⚡ Filtro per Quadro Elettrico"])
         
         with tab_piazze:
@@ -170,7 +156,6 @@ if menu == "🔍 Ricerca & Planimetria Impianti":
             unita_filtrate = df_impianti[df_impianti["quadro_elettrico"] == quadro_scelto]
             st.info(f"Trovate **{len(unita_filtrate)} unità HVAC** collegate al quadro `{quadro_scelto}`")
 
-    # Visualizzazione delle Schede Macchine
     for idx, row in unita_filtrate.iterrows():
         matricola_str = str(row['modello_matricola']).strip()
         key_id = str(row['id_macchina']).replace(" ", "_").replace("/", "_")
@@ -195,7 +180,6 @@ if menu == "🔍 Ricerca & Planimetria Impianti":
             st.markdown("---")
             tab_fgas, tab_filtri = st.tabs(["❄️ 1. Compila Modello F-GAS (CBRE)", "🧹 2. Rapportino Manutenzione Filtri"])
             
-            # --- TAB 1: REPORT F-GAS ---
             with tab_fgas:
                 with st.form(key=f"form_fgas_{key_id}"):
                     st.markdown("##### 📝 Controllo Periodico F-GAS e Generazione Report Ufficiale")
@@ -225,114 +209,4 @@ if menu == "🔍 Ricerca & Planimetria Impianti":
                             st.success("Report F-GAS generato con successo!")
                             st.rerun()
                         else:
-                            st.error(f"⚠️ File modello '{TEMPLATE_FGAS_PATH}' non trovato nella directory.")
-
-                if st.session_state.get(f'dl_fgas_{key_id}'):
-                    f_path = st.session_state[f'dl_fgas_{key_id}']
-                    if os.path.exists(f_path):
-                        with open(f_path, "rb") as f_in:
-                            st.download_button(label="📥 Scarica Documento Word F-GAS", data=f_in, file_name=f_path, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_f_{key_id}")
-
-            # --- TAB 2: RAPPORTINO FILTRI ---
-            with tab_filtri:
-                with st.form(key=f"form_filt_{key_id}"):
-                    st.markdown("##### 🧹 Rapportino Intervento Filtri & Pulizia")
-                    azione_f = st.selectbox("Azione Eseguita", ["Pulizia / Spolveratura Filtri", "Lavaggio Filtri & Sanificazione Vasca", "Sostituzione Filtri Nuovi"], key=f"az_{key_id}")
-                    stato_f = st.selectbox("Stato Post-Intervento", ["Pulito / Ottimale", "Buono", "Da Sostituire"], key=f"st_{key_id}")
-                    note_f = st.text_input("Note Tecniche", "Eseguita pulizia filtri e controllo flusso d'aria.", key=f"nt_{key_id}")
-                    
-                    btn_filt = st.form_submit_button("✅ Genera Rapportino Filtri Word")
-                    if btn_filt:
-                        doc_f = Document()
-                        doc_f.add_heading('RAPPORTINO MANUTENZIONE FILTRI & INTERVENTO ORDINARIO', level=1)
-                        doc_f.add_paragraph(f"Sito: McArthurGlen Designer Outlet Castel Romano — Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\nUnità / Negozio: {row['nr_unita']} ({row['ubicazione_negozio']})")
-                        doc_f.add_paragraph(f"DETTAGLI APPARECCHIATURA:\nMarca/Modello: {row['marca']} {row['modello_matricola']} | Quadro: {row['quadro_elettrico']}")
-                        doc_f.add_paragraph(f"INTERVENTO:\nAzione: {azione_f} | Stato: {stato_f.upper()}\nNote: {note_f}")
-                        doc_f.add_paragraph(f"TECNICO ESECUTORE:\nCBRE GWS Technical Division — ANTONIO MARTINEZ (Cert. PR-0148807)")
-                        
-                        filename_filt = f"Rapportino_Filtri_Unita_{row['nr_unita']}.docx"
-                        doc_f.save(filename_filt)
-                        st.session_state[f'dl_filt_{key_id}'] = filename_filt
-                        st.success("Rapportino filtri generato con successo!")
-                        st.rerun()
-
-                if st.session_state.get(f'dl_filt_{key_id}'):
-                    f_path_filt = st.session_state[f'dl_filt_{key_id}']
-                    if os.path.exists(f_path_filt):
-                        with open(f_path_filt, "rb") as f_in_f:
-                            st.download_button(label="📥 Scarica Rapportino Word Filtri", data=f_in_f, file_name=f_path_filt, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_filt_{key_id}")
-
-# --- MODULO 2: MANUTENZIONE PREVENTIVA & F-GAS ---
-elif menu == "📋 Manutenzione Preventiva & F-GAS":
-    st.title("📋 Checklist Preventiva e Storico Interventi")
-    st.markdown("Panoramica e programmazione delle scadenze e dei controlli periodici sulle 211 unità.")
-    st.info("💡 Usa la sezione Ricerca & Planimetria per selezionare l'unità specifica ed estrarre i report Word dedicati.")
-
-# --- MODULO 3: ODL CORRETTIVA / A CHIAMATA ---
-elif menu == "⚡ ODL Correttiva / A Chiamata":
-    st.title("⚡ Gestione ODL Correttivi / Extra a Chiamata")
-    st.markdown("Inserimento e verifica degli interventi straordinari (es. ODL `C63380570` per la fontana o richieste Security).")
-
-    tab1, tab2 = st.tabs(["➕ Nuovo ODL / Inoltro", "📂 Archivio ODL a Chiamata"])
-
-    with tab1:
-        with st.form("form_odl_chiamata"):
-            st.subheader("Registrazione / Chiusura ODL Straordinario")
-            c_odl = st.text_input("Codice ODL", value="C63380570")
-            richiedente = st.text_input("Richiedente", value="Security Castel Romano")
-            descrizione = st.text_area("Descrizione Lavoro", value="Intervento di regolazione e manutenzione straordinaria impianti")
-            data_limite = st.text_input("Data e Ora Riferimento", value=datetime.now().strftime("%d/%m/%Y %H:%M"))
-            
-            st.markdown("---")
-            ora_inizio = st.text_input("Ora Inizio", value="19:00")
-            ora_fine = st.text_input("Ora Fine", value="19:30")
-            esito = st.selectbox("Intervento Completato", ["SI", "NO"])
-            note_odl = st.text_area("Note dell'Intervento / Ricambi Utilizzati")
-            
-            salva_odl = st.form_submit_button("Registra e Chiudi ODL")
-            if salva_odl:
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO odl_chiamata (codice_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note, stato)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (c_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note_odl, "Completato"))
-                conn.commit()
-                conn.close()
-                st.success(f"ODL {c_odl} registrato e archiviato con successo!")
-
-    with tab2:
-        st.subheader("📂 Storico ODL Registrati")
-        conn = sqlite3.connect(DB_PATH)
-        df_odl = pd.read_sql("SELECT * FROM odl_chiamata", conn)
-        conn.close()
-        
-        if not df_odl.empty:
-            st.dataframe(df_odl, use_container_width=True)
-            
-            # Generazione file Excel per il download
-            excel_filename = "Archivio_ODL_Castel_Romano.xlsx"
-            df_odl.to_excel(excel_filename, index=False)
-            
-            with open(excel_filename, "rb") as f_excel:
-                st.download_button(
-                    label="📥 Scarica Archivio ODL in formato Excel",
-                    data=f_excel,
-                    file_name=excel_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="btn_dl_archivio_odl"
-                )
-        else:
-            st.info("Nessun ODL a chiamata registrato nel database locale.")
-
-# --- MODULO 4: PROFILO & F-GAS ---
-elif menu == "📜 Profilo & F-GAS":
-    st.title("📜 Certificazione e Profilo Tecnico")
-    st.markdown("Dettagli ufficiali dell'abilitazione registrata per operare sugli impianti del centro.")
-    
-    st.success("✅ **Tecnico:** Sandor Antonio Leon Martinez")
-    st.write("**Codice Fiscale:** LNMSDR79801Z504U")
-    st.write("**Ente Certificatore:** IMQ S.p.A. (Accredia)")
-    st.write("**N. Iscrizione Registro F-GAS:** PR0148807")
-    st.write("**N. Certificato:** 2067P-1912001 (Scadenza: 03/12/2029)")
-    st.write("**Categoria:** Categoria I (Senza limiti di carica frigorifera)")
+                            st.error(
