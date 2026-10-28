@@ -132,6 +132,8 @@ if menu == "🗺️ Mappa & Quadri Elettrici":
 
         for idx, row in unita_filtrate.iterrows():
             matricola_str = str(row['modello_matricola']).strip()
+            key_id = str(row['id_macchina']).replace(" ", "_").replace("/", "_")
+            
             with st.expander(f"⚙️ Unità {row['nr_unita']} — {row['marca']} ({row['ubicazione_negozio']})"):
                 c1, c2, c3 = st.columns(3)
                 with c1:
@@ -153,10 +155,10 @@ if menu == "🗺️ Mappa & Quadri Elettrici":
                 
                 # --- TAB 1: F-GAS ---
                 with tab_fgas:
-                    with st.form(key=f"form_fgas_{row['id_macchina']}"):
+                    with st.form(key=f"form_fgas_{key_id}"):
                         st.markdown("##### 📝 Controllo Periodico F-GAS e Generazione Report Ufficiale")
-                        esito_circ1 = st.selectbox("Esito Circuito 1", ["Assenza Perdite", "Rilevata Perdita"], key=f"es1_{row['id_macchina']}")
-                        note_fgas = st.text_input("Note Tecniche / Causa ed Azioni", "Controllo periodico eseguito con esito regolare.", key=f"note_f_{row['id_macchina']}")
+                        esito_circ1 = st.selectbox("Esito Circuito 1", ["Assenza Perdite", "Rilevata Perdita"], key=f"es1_{key_id}")
+                        note_fgas = st.text_input("Note Tecniche / Causa ed Azioni", "Controllo periodico eseguito con esito regolare.", key=f"note_f_{key_id}")
                         
                         btn_fgas = st.form_submit_button("✅ Genera Report Word F-GAS Ufficiale")
                         if btn_fgas:
@@ -177,25 +179,25 @@ if menu == "🗺️ Mappa & Quadri Elettrici":
                                 sostituisci_testo_docx(doc, mappa_dati)
                                 filename_fgas = f"Report_FGAS_{row['marca']}_{matricola_str.replace('/', '_')}.docx"
                                 doc.save(filename_fgas)
-                                st.session_state[f'dl_fgas_{row["id_macchina']}'] = filename_fgas
+                                st.session_state[f'dl_fgas_{key_id}'] = filename_fgas
                                 st.success("Report F-GAS generato con successo!")
                                 st.rerun()
                             else:
                                 st.error(f"⚠️ File modello '{TEMPLATE_FGAS_PATH}' non trovato nella directory.")
 
-                    if st.session_state.get(f'dl_fgas_{row["id_macchina']}'):
-                        f_path = st.session_state[f'dl_fgas_{row["id_macchina"]}']
+                    if st.session_state.get(f'dl_fgas_{key_id}'):
+                        f_path = st.session_state[f'dl_fgas_{key_id}']
                         if os.path.exists(f_path):
                             with open(f_path, "rb") as f_in:
-                                st.download_button(label="📥 Scarica Documento Word F-GAS", data=f_in, file_name=f_path, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_f_{row['id_macchina']}")
+                                st.download_button(label="📥 Scarica Documento Word F-GAS", data=f_in, file_name=f_path, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_f_{key_id}")
 
                 # --- TAB 2: FILTRI ---
                 with tab_filtri:
-                    with st.form(key=f"form_filt_{row['id_macchina']}"):
+                    with st.form(key=f"form_filt_{key_id}"):
                         st.markdown("##### 🧹 Rapportino Intervento Filtri & Pulizia")
-                        azione_f = st.selectbox("Azione Eseguita", ["Pulizia / Spolveratura Filtri", "Lavaggio Filtri & Sanificazione Vasca", "Sostituzione Filtri Nuovi"], key=f"az_{row['id_macchina']}")
-                        stato_f = st.selectbox("Stato Post-Intervento", ["Pulito / Ottimale", "Buono", "Da Sostituire"], key=f"st_{row['id_macchina']}")
-                        note_f = st.text_input("Note Tecniche", "Eseguita pulizia filtri e controllo flusso d'aria.", key=f"nt_{row['id_macchina']}")
+                        azione_f = st.selectbox("Azione Eseguita", ["Pulizia / Spolveratura Filtri", "Lavaggio Filtri & Sanificazione Vasca", "Sostituzione Filtri Nuovi"], key=f"az_{key_id}")
+                        stato_f = st.selectbox("Stato Post-Intervento", ["Pulito / Ottimale", "Buono", "Da Sostituire"], key=f"st_{key_id}")
+                        note_f = st.text_input("Note Tecniche", "Eseguita pulizia filtri e controllo flusso d'aria.", key=f"nt_{key_id}")
                         
                         btn_filt = st.form_submit_button("✅ Genera Rapportino Filtri Word")
                         if btn_filt:
@@ -208,15 +210,15 @@ if menu == "🗺️ Mappa & Quadri Elettrici":
                             
                             filename_filt = f"Rapportino_Filtri_Unita_{row['nr_unita']}.docx"
                             doc_f.save(filename_filt)
-                            st.session_state[f'dl_filt_{row["id_macchina"]}'] = filename_filt
+                            st.session_state[f'dl_filt_{key_id}'] = filename_filt
                             st.success("Rapportino filtri generato con successo!")
                             st.rerun()
 
-                    if st.session_state.get(f'dl_filt_{row["id_macchina"]}'):
-                        f_path_filt = st.session_state[f'dl_filt_{row["id_macchina"]}']
+                    if st.session_state.get(f'dl_filt_{key_id}'):
+                        f_path_filt = st.session_state[f'dl_filt_{key_id}']
                         if os.path.exists(f_path_filt):
                             with open(f_path_filt, "rb") as f_in_f:
-                                st.download_button(label="📥 Scarica Rapportino Word Filtri", data=f_in_f, file_name=f_path_filt, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_filt_{row['id_macchina']}")
+                                st.download_button(label="📥 Scarica Rapportino Word Filtri", data=f_in_f, file_name=f_path_filt, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_filt_{key_id}")
     else:
         st.warning("⚠️ Nessun impianto trovato nel database.")
 
