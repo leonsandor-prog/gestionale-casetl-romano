@@ -5192,6 +5192,26 @@ app_fgas
  PY 
 Ti serve altro supporto per completare l'aggiornamento dell'app?
 
+File "/mount/src/gestionale-casetl-romano/app_fgas.py", line 33
+
+  → Parsing automatico dei dati
+
+  ^
+
+SyntaxError: invalid character '→' (U+2192)
+
+Il problema era causato da un carattere freccia speciale unicode (→ al posto di -> o in un commento) che Python non accetta fuori dalle stringhe o all'interno del codice sorgente senza corretta formattazione.
+
+Ho rimosso e sostituito tutti i caratteri speciali non validi nel file Python. Il file app_fgas.py è stato ricompilato e verificato senza alcun errore di sintassi.   
+PY
+
+Puoi scaricare il file corretto qui sotto:
+
+Icona PY
+app_fgas
+ PY 
+Ci sono altre righe o moduli che desideri verificare prima del test finale su Streamlit Cloud?
+
 
 
 
@@ -5321,7 +5341,7 @@ menu = st.sidebar.selectbox(
 )
 
 if menu == "🔍 Ricerca & Planimetria Impianti":
-    st.title("🗺️ Gestione Impianti HVAC — Castel Romano (211 Unità)")
+    st.title("🗺️ Gestione Impianti HVAC - Castel Romano (211 Unità)")
     
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
@@ -5358,7 +5378,7 @@ if menu == "🔍 Ricerca & Planimetria Impianti":
         matricola_str = str(row['modello_matricola']).strip()
         key_id = str(row['id_macchina']).replace(" ", "_").replace("/", "_")
         
-        with st.expander(f"⚙️ Unità {row['nr_unita']} — {row['marca']} ({row['ubicazione_negozio']}) — [{row['macro_area']}]"):
+        with st.expander(f"⚙️ Unità {row['nr_unita']} - {row['marca']} ({row['ubicazione_negozio']}) - [{row['macro_area']}]"):
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown("**📋 Dati Tecnici**")
@@ -5426,10 +5446,10 @@ if menu == "🔍 Ricerca & Planimetria Impianti":
                     if btn_filt:
                         doc_f = Document()
                         doc_f.add_heading('RAPPORTINO MANUTENZIONE FILTRI & INTERVENTO ORDINARIO', level=1)
-                        doc_f.add_paragraph(f"Sito: McArthurGlen Designer Outlet Castel Romano — Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\nUnità / Negozio: {row['nr_unita']} ({row['ubicazione_negozio']})")
+                        doc_f.add_paragraph(f"Sito: McArthurGlen Designer Outlet Castel Romano - Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\nUnità / Negozio: {row['nr_unita']} ({row['ubicazione_negozio']})")
                         doc_f.add_paragraph(f"DETTAGLI APPARECCHIATURA:\nMarca/Modello: {row['marca']} {row['modello_matricola']} | Quadro: {row['quadro_elettrico']}")
                         doc_f.add_paragraph(f"INTERVENTO:\nAzione: {azione_f} | Stato: {stato_f.upper()}\nNote: {note_f}")
-                        doc_f.add_paragraph(f"TECNICO ESECUTORE:\nCBRE GWS Technical Division — ANTONIO MARTINEZ (Cert. PR-0148807)")
+                        doc_f.add_paragraph(f"TECNICO ESECUTORE:\nCBRE GWS Technical Division - ANTONIO MARTINEZ (Cert. PR-0148807)")
                         
                         filename_filt = f"Rapportino_Filtri_Unita_{row['nr_unita']}.docx"
                         doc_f.save(filename_filt)
