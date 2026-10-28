@@ -242,9 +242,41 @@ if menu == "Ricerca & Planimetria Impianti":
                             st.download_button(label="Scarica Rapportino Word Filtri", data=f_in_f, file_name=f_path_filt, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_filt_{key_id}")
 
 elif menu == "Manutenzione Preventiva & F-GAS":
-    st.title("Checklist Preventiva e Storico Interventi")
-    st.markdown("Panoramica e programmazione delle scadenze e dei controlli periodici sulle 211 unita.")
-    st.info("Usa la sezione Ricerca & Planimetria per selezionare l'unita specifica ed estrarre i report Word dedicati.")
+    st.title("Checklist Preventiva e Scadenze F-GAS")
+    st.markdown("Panoramica completa di tutte le 211 unita HVAC, scadenze di verifica e tonnellate di CO2 equivalente.")
+    
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    df_prev = pd.read_sql("SELECT nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area FROM macchine_hvac", conn)
+    conn.close()
+    
+    # Filters
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        filtro_piazza = st.selectbox("Filtra per Piazza / Zona", ["Tutte le piazze"] + sorted(df_prev['macro_area'].dropna().unique().tolist()))
+    with col_f2:
+        filtro_marca = st.selectbox("Filtra per Marca", ["Tutte le marche"] + sorted(df_prev['marca'].dropna().unique().tolist()))
+        
+    df_filtered = df_prev.copy()
+    if filtro_piazza != "Tutte le piazze":
+        df_filtered = df_filtered[df_filtered['macro_area'] == filtro_piazza]
+    if filtro_marca != "Tutte le marche":
+        df_filtered = df_filtered[df_filtered['marca'] == filtro_marca]
+        
+    st.markdown(f"**Impianti visualizzati:** {len(df_filtered)}")
+    st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+    
+    # Export excel button
+    excel_scadenze = "Scadenze_HVAC_Castel_Romano.xlsx"
+    df_filtered.to_excel(excel_scadenze, index=False)
+    with open(excel_scadenze, "rb") as f_scad:
+        st.download_button(
+            label="Scarica Tabella Scadenze in formato Excel",
+            data=f_scad,
+            file_name=excel_scadenze,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_scad_hvac"
+        )
+
 
 elif menu == "ODL Correttiva / A Chiamata":
     st.title("Gestione ODL Correttivi / Extra a Chiamata")
