@@ -30,9 +30,10 @@ def init_db_mappa():
             )
         ''')
 
-        # Tabella Impianti dal Registro Master Definitivo (211 unità)
+        # Ricrea la tabella macchine_hvac per allinearla con le colonne corrette del file Excel
+        cursor.execute('DROP TABLE IF EXISTS macchine_hvac')
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS macchine_hvac (
+            CREATE TABLE macchine_hvac (
                 id_macchina TEXT PRIMARY KEY,
                 nr_unita TEXT,
                 marca TEXT,
@@ -48,10 +49,7 @@ def init_db_mappa():
             )
         ''')
         
-        cursor.execute('SELECT COUNT(*) FROM macchine_hvac')
-        count = cursor.fetchone()[0]
-        
-        if count == 0 and os.path.exists(EXCEL_PATH):
+        if os.path.exists(EXCEL_PATH):
             df_excel = pd.read_excel(EXCEL_PATH, sheet_name='Impianti HVAC & Planimetria')
             for _, row in df_excel.iterrows():
                 nr_u = str(row.get("Nr. Unità", "")).strip()
@@ -179,13 +177,13 @@ if menu == "🗺️ Mappa & Quadri Elettrici":
                                 sostituisci_testo_docx(doc, mappa_dati)
                                 filename_fgas = f"Report_FGAS_{row['marca']}_{matricola_str.replace('/', '_')}.docx"
                                 doc.save(filename_fgas)
-                                st.session_state[f'dl_fgas_{row["id_macchina"]}'] = filename_fgas
+                                st.session_state[f'dl_fgas_{row["id_macchina']}'] = filename_fgas
                                 st.success("Report F-GAS generato con successo!")
                                 st.rerun()
                             else:
                                 st.error(f"⚠️ File modello '{TEMPLATE_FGAS_PATH}' non trovato nella directory.")
 
-                    if st.session_state.get(f'dl_fgas_{row["id_macchina"]}'):
+                    if st.session_state.get(f'dl_fgas_{row["id_macchina']}'):
                         f_path = st.session_state[f'dl_fgas_{row["id_macchina"]}']
                         if os.path.exists(f_path):
                             with open(f_path, "rb") as f_in:
