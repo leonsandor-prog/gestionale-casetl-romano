@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -301,11 +302,26 @@ elif menu == "⚡ ODL Correttiva / A Chiamata":
                 st.success(f"ODL {c_odl} registrato e archiviato con successo!")
 
     with tab2:
+        st.subheader("📂 Storico ODL Registrati")
         conn = sqlite3.connect(DB_PATH)
         df_odl = pd.read_sql("SELECT * FROM odl_chiamata", conn)
         conn.close()
+        
         if not df_odl.empty:
             st.dataframe(df_odl, use_container_width=True)
+            
+            # Generazione file Excel per il download
+            excel_filename = "Archivio_ODL_Castel_Romano.xlsx"
+            df_odl.to_excel(excel_filename, index=False)
+            
+            with open(excel_filename, "rb") as f_excel:
+                st.download_button(
+                    label="📥 Scarica Archivio ODL in formato Excel",
+                    data=f_excel,
+                    file_name=excel_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="btn_dl_archivio_odl"
+                )
         else:
             st.info("Nessun ODL a chiamata registrato nel database locale.")
 
