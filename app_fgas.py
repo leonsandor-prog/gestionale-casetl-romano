@@ -1,20 +1,21 @@
-import streamlit as st
-import pandas as pd
 import sqlite3
 import os
 from datetime import datetime, timedelta
+import pandas as pd
 from docx import Document
+import streamlit as st
 
 DB_PATH = "castel_romano.db"
 EXCEL_PATH = "F-GAS Impianti attivi 2026.xlsx"
 TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
 
+
 def init_db_mappa():
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute("""
+  conn = sqlite3.connect(DB_PATH, timeout=10.0)
+  cursor = conn.cursor()
+
+  try:
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS odl_chiamata (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 codice_odl TEXT,
@@ -29,8 +30,8 @@ def init_db_mappa():
             )
         """)
 
-        cursor.execute('DROP TABLE IF EXISTS macchine_hvac')
-        cursor.execute("""
+    cursor.execute("DROP TABLE IF EXISTS macchine_hvac")
+    cursor.execute("""
             CREATE TABLE macchine_hvac (
                 id_macchina TEXT PRIMARY KEY,
                 nr_unita TEXT,
@@ -51,103 +52,119 @@ def init_db_mappa():
                 data_scadenza_dt TEXT
             )
         """)
-        
-        if os.path.exists(EXCEL_PATH):
-            df_excel = pd.read_excel(EXCEL_PATH, sheet_name='Elenco di FGAS')
-            for _, row in df_excel.iterrows():
-                f_gas_stat = str(row.get("F-Gas?", "S")).strip().upper()
-                if f_gas_stat == "N":
-                    continue
-                    
-                descrizione = str(row.get("Descrizione", "")).strip()
-                marca = str(row.get("Marca", "")).strip()
-                modello = str(row.get("Modello", "")).strip()
-                matricola = str(row.get("Matricola", "")).strip()
-                mod_mat = f"{modello} {matricola}".strip()
-                
-                cod_app = str(row.get("Cod. Apparecchiatura", "")).strip()
-                refrigerante = str(row.get("Tipo HCFC", "R410A")).strip()
-                
-                tonn_co2 = row.get("Tonn CO2 Eq", 0.0)
-                if pd.isna(tonn_co2):
-                    tonn_co2 = 0.0
-                
-                ultima_v = row.get("Data ultima verifica", "")
-                if pd.notna(ultima_v) and isinstance(ultima_v, datetime):
-                    ultima_v_str = ultima_v.strftime("%d/%m/%Y")
-                else:
-                    ultima_v_str = str(ultima_v)
-                    
-                scad_v = row.get("Scadenza verifica", "")
-                scad_v_dt_str = ""
-                if pd.notna(scad_v) and isinstance(scad_v, datetime):
-                    scad_v_str = scad_v.strftime("%d/%m/%Y")
-                    scad_v_dt_str = scad_v.strftime("%Y-%m-%d")
-                else:
-                    scad_v_str = str(scad_v)
-                    scad_v_dt_str = str(scad_v)
-                
-                macro = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
-                carica_kg = (tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0
-                
-                id_unic = f"{descrizione}_{mod_mat}_{cod_app}"
-                
-                cursor.execute("""
+
+    if os.path.exists(EXCEL_PATH):
+      df_excel = pd.read_excel(EXCEL_PATH, sheet_name="Elenco di FGAS")
+      for _, row in df_excel.iterrows():
+        f_gas_stat = str(row.get("F-Gas?", "S")).strip().upper()
+        if f_gas_stat == "N":
+          continue
+
+        descrizione = str(row.get("Descrizione", "")).strip()
+        marca = str(row.get("Marca", "")).strip()
+        modello = str(row.get("Modello", "")).strip()
+        matricola = str(row.get("Matricola", "")).strip()
+        mod_mat = f"{modello} {matricola}".strip()
+
+        cod_app = str(row.get("Cod. Apparecchiatura", "")).strip()
+        refrigerante = str(row.get("Tipo HCFC", "R410A")).strip()
+
+        tonn_co2 = row.get("Tonn CO2 Eq", 0.0)
+        if pd.isna(tonn_co2):
+          tonn_co2 = 0.0
+
+        ultima_v = row.get("Data ultima verifica", "")
+        if pd.notna(ultima_v) and isinstance(ultima_v, datetime):
+          ultima_v_str = ultima_v.strftime("%d/%m/%Y")
+        else:
+          ultima_v_str = str(ultima_v)
+
+        scad_v = row.get("Scadenza verifica", "")
+        scad_v_dt_str = ""
+        if pd.notna(scad_v) and isinstance(scad_v, datetime):
+          scad_v_str = scad_v.strftime("%d/%m/%Y")
+          scad_v_dt_str = scad_v.strftime("%Y-%m-%d")
+        else:
+          scad_v_str = str(scad_v)
+          scad_v_dt_str = str(scad_v)
+
+        macro = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
+        carica_kg = (tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0
+
+        id_unic = f"{descrizione}_{mod_mat}_{cod_app}"
+
+        cursor.execute(
+            """
                     INSERT OR REPLACE INTO macchine_hvac 
                     (id_macchina, nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, n_circuiti, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq, carica_kg, f_gas_attivo, data_scadenza_dt)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    id_unic,
-                    descrizione,
-                    marca,
-                    mod_mat,
-                    descrizione,
-                    "Quadro Generale",
-                    float(carica_kg * 1.2),
-                    1,
-                    refrigerante,
-                    cod_app,
-                    ultima_v_str,
-                    scad_v_str,
-                    macro,
-                    float(tonn_co2),
-                    float(carica_kg),
-                    f_gas_stat,
-                    scad_v_dt_str
-                ))
-                    
-        conn.commit()
-    finally:
-        conn.close()
+                """,
+            (
+                id_unic,
+                descrizione,
+                marca,
+                mod_mat,
+                descrizione,
+                "Quadro Generale",
+                float(carica_kg * 1.2),
+                1,
+                refrigerante,
+                cod_app,
+                ultima_v_str,
+                scad_v_str,
+                macro,
+                float(tonn_co2),
+                float(carica_kg),
+                f_gas_stat,
+                scad_v_dt_str,
+            ),
+        )
+
+    conn.commit()
+  finally:
+    conn.close()
+
 
 def aggiorna_scadenza_db(id_macchina, nuova_data_str, nuova_scad_str):
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    cursor = conn.cursor()
-    cursor.execute("""
+  conn = sqlite3.connect(DB_PATH, timeout=10.0)
+  cursor = conn.cursor()
+  cursor.execute(
+      """
         UPDATE macchine_hvac 
         SET ultima_verifica = ?, scadenza_verifica = ?, data_scadenza_dt = ?
         WHERE id_macchina = ?
-    """, (nuova_data_str, nuova_scad_str, datetime.strptime(nuova_scad_str, "%d/%m/%Y").strftime("%Y-%m-%d"), id_macchina))
-    conn.commit()
-    conn.close()
+    """,
+      (
+          nuova_data_str,
+          nuova_scad_str,
+          datetime.strptime(nuova_scad_str, "%d/%m/%Y").strftime("%Y-%m-%d"),
+          id_macchina,
+      ),
+  )
+  conn.commit()
+  conn.close()
+
 
 def sostituisci_testo_docx(doc, mappa_sostituzioni):
-    for p in doc.paragraphs:
-        for chiave, valore in mappa_sostituzioni.items():
-            if chiave in p.text:
-                p.text = p.text.replace(chiave, str(valore))
+  for p in doc.paragraphs:
+    for chiave, valore in mappa_sostituzioni.items():
+      if chiave in p.text:
+        p.text = p.text.replace(chiave, str(valore))
 
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    for chiave, valore in mappa_sostituzioni.items():
-                        if chiave in p.text:
-                            p.text = p.text.replace(chiave, str(valore))
+  for table in doc.tables:
+    for row in table.rows:
+      for cell in row.cells:
+        for p in cell.paragraphs:
+          for chiave, valore in mappa_sostituzioni.items():
+            if chiave in p.text:
+              p.text = p.text.replace(chiave, str(valore))
+
 
 init_db_mappa()
 
-st.set_page_config(page_title="Gestione F-GAS & Manutenzione Castel Romano", layout="wide")
+st.set_page_config(
+    page_title="Gestione F-GAS & Manutenzione Castel Romano", layout="wide"
+)
 st.sidebar.title("CBRE GWS - Castel Romano")
 st.sidebar.markdown("**Tecnico:** Sandor Antonio Leon Martinez")
 st.sidebar.markdown("**Certificazione F-GAS:** PR0148807 (Cat. I)")
@@ -158,289 +175,449 @@ menu = st.sidebar.selectbox(
         "Ricerca & Planimetria Impianti",
         "Manutenzione Preventiva & F-GAS",
         "ODL Correttiva / A Chiamata",
-        "Profilo & F-GAS"
-    ]
+        "Profilo & F-GAS",
+    ],
 )
 
 oggi = datetime.now()
 
 if menu == "Ricerca & Planimetria Impianti":
-    st.title("Gestione Impianti HVAC - Castel Romano (Registro Ufficiale 2026)")
-    
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
-    conn.close()
+  st.title("Gestione Impianti HVAC - Castel Romano (Registro Ufficiale 2026)")
 
-    modo_vista = st.radio("Seleziona modalità di navigazione:", ["Filtro Rapido per Stato / Scadenza", "Ricerca per Negozio / Unità", "Tutti gli Impianti"], horizontal=True)
+  conn = sqlite3.connect(DB_PATH, timeout=10.0)
+  df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
+  conn.close()
 
-    unita_filtrate = pd.DataFrame()
+  modo_vista = st.radio(
+      "Seleziona modalità di navigazione:",
+      [
+          "Filtro Rapido per Stato / Scadenza",
+          "Ricerca per Negozio / Unità",
+          "Tutti gli Impianti",
+      ],
+      horizontal=True,
+  )
 
-    if modo_vista == "Filtro Rapido per Stato / Scadenza":
-        scelta_stato = st.selectbox("Filtra per Stato Impianto:", ["Tutti", "🟢 Regolari", "🟡 In Scadenza (30 gg)", "🔴 Scaduti"])
-        
-        temp_list = []
-        for idx, row in df_impianti.iterrows():
-            scad_str = str(row['data_scadenza_dt'])
-            try:
-                dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
-                delta = (dt_scad - oggi).days
-            except:
-                delta = 9999
-                
-            if delta < 0:
-                stato = "🔴 Scaduti"
-            elif delta <= 30:
-                stato = "🟡 In Scadenza (30 gg)"
-            else:
-                stato = "🟢 Regolari"
-                
-            if scelta_stato == "Tutti" or scelta_stato == stato:
-                temp_list.append(row)
-                
-        if temp_list:
-            unita_filtrate = pd.DataFrame(temp_list)
-        else:
-            unita_filtrate = pd.DataFrame(columns=df_impianti.columns)
-            
-        st.info(f"Trovate **{len(unita_filtrate)} unità HVAC** per lo stato `{scelta_stato}`")
-        
-    elif modo_vista == "Ricerca per Negozio / Unità":
-        search_query = st.text_input("Inserisci nome negozio, numero unità, marca o targa:", "").strip().lower()
-        if search_query:
-            unita_filtrate = df_impianti[
-                df_impianti['ubicazione_negozio'].astype(str).str.lower().str.contains(search_query) |
-                df_impianti['nr_unita'].astype(str).str.lower().str.contains(search_query) |
-                df_impianti['marca'].astype(str).str.lower().str.contains(search_query) |
-                df_impianti['modello_matricola'].astype(str).str.lower().str.contains(search_query) |
-                df_impianti['codice_targa'].astype(str).str.lower().str.contains(search_query)
-            ]
-            st.subheader(f"Risultati della ricerca per '{search_query}': ({len(unita_filtrate)} macchine trovate)")
-        else:
-            unita_filtrate = df_impianti.copy()
+  unita_filtrate = pd.DataFrame()
+
+  if modo_vista == "Filtro Rapido per Stato / Scadenza":
+    scelta_stato = st.selectbox(
+        "Filtra per Stato Impianto:",
+        ["Tutti", "🟢 Regolari", "🟡 In Scadenza (30 gg)", "🔴 Scaduti"],
+    )
+
+    temp_list = []
+    for idx, row in df_impianti.iterrows():
+      scad_str = str(row["data_scadenza_dt"])
+      try:
+        dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
+        delta = (dt_scad - oggi).days
+      except:
+        delta = 9999
+
+      if delta < 0:
+        stato = "🔴 Scaduti"
+      elif delta <= 30:
+        stato = "🟡 In Scadenza (30 gg)"
+      else:
+        stato = "🟢 Regolari"
+
+      if scelta_stato == "Tutti" or scelta_stato == stato:
+        temp_list.append(row)
+
+    if temp_list:
+      unita_filtrate = pd.DataFrame(temp_list)
     else:
-        unita_filtrate = df_impianti.copy()
+      unita_filtrate = pd.DataFrame(columns=df_impianti.columns)
 
-    st.markdown("---")
+    st.info(
+        f"Trovate **{len(unita_filtrate)} unità HVAC** per lo stato"
+        f" `{scelta_stato}`"
+    )
 
-    for idx, row in unita_filtrate.iterrows():
-        matricola_str = str(row['modello_matricola']).strip()
-        key_id = str(row['id_macchina']).replace(" ", "_").replace("/", "_")
-        
-        scad_str = str(row['data_scadenza_dt'])
-        try:
-            dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
-            delta = (dt_scad - oggi).days
-        except:
-            delta = 9999
-            
-        if delta < 0:
-            stato_pallino = "🔴"
-            stato_txt = "SCADUTO"
-        elif delta <= 30:
-            stato_pallino = "🟡"
-            stato_txt = "IN SCADENZA"
-        else:
-            stato_pallino = "🟢"
-            stato_txt = "REGOLARE"
-        
-        with st.expander(f"{stato_pallino} Impianto {row['nr_unita']} - {row['marca']} (Targa: {row['codice_targa']}) [{stato_txt}]"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown("**Dati Tecnici**")
-                st.write(f"- Descrizione / Unità: `{row['nr_unita']}`")
-                st.write(f"- Modello / Matricola: `{matricola_str}`")
-                st.write(f"- CO2 Eq: `{row['tonn_co2_eq']} tCO2e`")
-            with c2:
-                st.markdown("**Refrigerante & Targa**")
-                st.write(f"- Gas: `{row['refrigerante']}`")
-                st.write(f"- Cod. Targa: `{row['codice_targa']}`")
-                st.write(f"- Carica stimata: `{row['carica_kg']:.2f} kg`")
-            with c3:
-                st.markdown("**Verifiche**")
-                st.write(f"- Ultima Verifica: `{row['ultima_verifica']}`")
-                st.write(f"- Scadenza Attuale: `{row['scadenza_verifica']}`")
-            
-            st.markdown("---")
-            tab_fgas, tab_filtri = st.tabs(["1. Compila & Rinnova F-GAS", "2. Rapportino Manutenzione Filtri"])
-            
-            with tab_fgas:
-                with st.form(key=f"form_fgas_{key_id}"):
-                    st.markdown("##### Controllo Periodico F-GAS e Rinnovo Annuale")
-                    
-                    # Prende la vecchia data ultima verifica come base di default, oppure la data corrente se vuota
-                    data_int_precedente = str(row['ultima_verifica']).strip()
-                    try:
-                        dt_def = datetime.strptime(data_int_precedente, "%d/%m/%Y")
-                    except:
-                        dt_def = oggi
-                        
-                    # Calcola la nuova scadenza aggiungendo esattamente 1 anno alla vecchia scadenza registrata
-                    scad_precedente = str(row['scadenza_verifica']).strip()
-                    try:
-                        dt_vecchia_scad = datetime.strptime(scad_precedente, "%d/%m/%Y")
-                        dt_nuova_scad = dt_vecchia_scad + timedelta(days=365)
-                    except:
-                        dt_nuova_scad = dt_def + timedelta(days=365)
-                        
-                    nuova_scad_default = dt_nuova_scad.strftime("%d/%m/%Y")
-                    
-                    col_d1, col_d2 = st.columns(2)
-                    with col_d1:
-                        data_intervento_input = st.text_input("Data Intervento (Modificabile Manualmente)", value=dt_def.strftime("%d/%m/%Y"), key=f"dt_int_{key_id}")
-                    with col_d2:
-                        nuova_scadenza_input = st.text_input("Nuova Scadenza Impianto (+1 Anno)", value=nuova_scad_default, key=f"dt_scad_{key_id}")
-                        
-                    esito_circ1 = st.selectbox("Esito Circuito 1", ["Assenza Perdite", "Rilevata Perdita"], key=f"es1_{key_id}")
-                    note_fgas = st.text_input("Note Tecniche / Causa ed Azioni", "Controllo periodico eseguito con esito regolare. Impianto rinnovato.", key=f"note_f_{key_id}")
-                    
-                    btn_fgas = st.form_submit_button("Genera Certificato Word e Aggiorna Scadenza")
-                    if btn_fgas:
-                        if os.path.exists(TEMPLATE_FGAS_PATH):
-                            doc = Document(TEMPLATE_FGAS_PATH)
-                            mappa_dati = {
-                                "{{UNITA}}": str(row['nr_unita']),
-                                "{{MARCA}}": str(row['marca']),
-                                "{{MODELLO}}": str(row['modello_matricola']),
-                                "{{MATRICOLA}}": matricola_str,
-                                "{{TIPO_GAS}}": str(row['refrigerante']),
-                                "{{CARICA_KG}}": f"{row['carica_kg']:.2f} kg",
-                                "{{CO2_EQ}}": f"{row['tonn_co2_eq']} tCO2e",
-                                "{{COD_APP}}": str(row['codice_targa']),
-                                "{{DATA_INTERVENTO}}": data_intervento_input,
-                                "{{SCADENZA_VERIFICA}}": nuova_scadenza_input,
-                                "{{ESITO_CIRC1}}": esito_circ1.upper(),
-                                "{{NOTE_FGAS}}": note_fgas
-                            }
-                            sostituisci_testo_docx(doc, mappa_dati)
-                            filename_fgas = f"Report_FGAS_{row['marca']}_{matricola_str.replace('/', '_').replace(' ', '_')}.docx"
-                            doc.save(filename_fgas)
-                            
-                            # Aggiorna il database con le date corrette (intervento inserito + nuova scadenza +1 anno)
-                            aggiorna_scadenza_db(row['id_macchina'], data_intervento_input, nuova_scadenza_input)
-                            
-                            st.session_state[f'dl_fgas_{key_id}'] = filename_fgas
-                            st.success(f"Certificato generato con intervento in data {data_intervento_input} e nuova scadenza al {nuova_scadenza_input}!")
-                            st.rerun()
-                        else:
-                            st.error(f"File modello '{TEMPLATE_FGAS_PATH}' non trovato nella directory.")
+  elif modo_vista == "Ricerca per Negozio / Unità":
+    search_query = (
+        st.text_input(
+            "Inserisci nome negozio, numero unità, marca o targa:", ""
+        )
+        .strip()
+        .lower()
+    )
+    if search_query:
+      unita_filtrate = df_impianti[
+          df_impianti["ubicazione_negozio"]
+          .astype(str)
+          .str.lower()
+          .str.contains(search_query)
+          | df_impianti["nr_unita"]
+          .astype(str)
+          .str.lower()
+          .str.contains(search_query)
+          | df_impianti["marca"]
+          .astype(str)
+          .str.lower()
+          .str.contains(search_query)
+          | df_impianti["modello_matricola"]
+          .astype(str)
+          .str.lower()
+          .str.contains(search_query)
+          | df_impianti["codice_targa"]
+          .astype(str)
+          .str.lower()
+          .str.contains(search_query)
+      ]
+      st.subheader(
+          f"Risultati della ricerca per '{search_query}': ({len(unita_filtrate)}"
+          " macchine trovate)"
+      )
+    else:
+      unita_filtrate = df_impianti.copy()
+  else:
+    unita_filtrate = df_impianti.copy()
 
-                if st.session_state.get(f'dl_fgas_{key_id}'):
-                    f_path = st.session_state[f'dl_fgas_{key_id}']
-                    if os.path.exists(f_path):
-                        with open(f_path, "rb") as f_in:
-                            st.download_button(label="Scarica Certificato F-GAS Aggiornato (.docx)", data=f_in, file_name=f_path, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_f_{key_id}")
+  st.markdown("---")
 
-            with tab_filtri:
-                with st.form(key=f"form_filt_{key_id}"):
-                    st.markdown("##### Rapportino Intervento Filtri & Pulizia")
-                    azione_f = st.selectbox("Azione Eseguita", ["Pulizia / Spolveratura Filtri", "Lavaggio Filtri & Sanificazione Vasca", "Sostituzione Filtri Nuovi"], key=f"az_{key_id}")
-                    stato_f = st.selectbox("Stato Post-Intervento", ["Pulito / Ottimale", "Buono", "Da Sostituire"], key=f"st_{key_id}")
-                    note_f = st.text_input("Note Tecniche", "Eseguita pulizia filtri e controllo flusso d'aria.", key=f"nt_{key_id}")
-                    
-                    btn_filt = st.form_submit_button("Genera Rapportino Filtri Word")
-                    if btn_filt:
-                        doc_f = Document()
-                        doc_f.add_heading('RAPPORTINO MANUTENZIONE FILTRI & INTERVENTO ORDINARIO', level=1)
-                        doc_f.add_paragraph(f"Sito: McArthurGlen Designer Outlet Castel Romano - Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\nImpianto: {row['nr_unita']}")
-                        doc_f.add_paragraph(f"DETTAGLI APPARECCHIATURA:\nMarca/Modello: {row['marca']} {row['modello_matricola']} | Targa: {row['codice_targa']}")
-                        doc_f.add_paragraph(f"INTERVENTO:\nAzione: {azione_f} | Stato: {stato_f.upper()}\nNote: {note_f}")
-                        doc_f.add_paragraph(f"TECNICO ESECUTORE:\nCBRE GWS Technical Division - ANTONIO MARTINEZ (Cert. PR-0148807)")
-                        
-                        filename_filt = f"Rapportino_Filtri_{row['nr_unita'].replace(' ', '_')}.docx"
-                        doc_f.save(filename_filt)
-                        st.session_state[f'dl_filt_{key_id}'] = filename_filt
-                        st.success("Rapportino filtri generato con successo!")
-                        st.rerun()
+  for idx, row in unita_filtrate.iterrows():
+    matricola_str = str(row["modello_matricola"]).strip()
+    key_id = str(row["id_macchina"]).replace(" ", "_").replace("/", "_")
 
-                if st.session_state.get(f'dl_filt_{key_id}'):
-                    f_path_filt = st.session_state[f'dl_filt_{key_id}']
-                    if os.path.exists(f_path_filt):
-                        with open(f_path_filt, "rb") as f_in_f:
-                            st.download_button(label="Scarica Rapportino Word Filtri", data=f_in_f, file_name=f_path_filt, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", key=f"dl_btn_filt_{key_id}")
+    scad_str = str(row["data_scadenza_dt"])
+    try:
+      dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
+      delta = (dt_scad - oggi).days
+    except:
+      delta = 9999
+
+    if delta < 0:
+      stato_pallino = "🔴"
+      stato_txt = "SCADUTO"
+    elif delta <= 30:
+      stato_pallino = "🟡"
+      stato_txt = "IN SCADENZA"
+    else:
+      stato_pallino = "🟢"
+      stato_txt = "REGOLARE"
+
+    with st.expander(
+        f"{stato_pallino} Impianto {row['nr_unita']} - {row['marca']} (Targa:"
+        f" {row['codice_targa']}) [{stato_txt}]"
+    ):
+      c1, c2, c3 = st.columns(3)
+      with c1:
+        st.markdown("**Dati Tecnici**")
+        st.write(f"- Descrizione / Unità: `{row['nr_unita']}`")
+        st.write(f"- Modello / Matricola: `{matricola_str}`")
+        st.write(f"- CO2 Eq: `{row['tonn_co2_eq']} tCO2e`")
+      with c2:
+        st.markdown("**Refrigerante & Targa**")
+        st.write(f"- Gas: `{row['refrigerante']}`")
+        st.write(f"- Cod. Targa: `{row['codice_targa']}`")
+        st.write(f"- Carica stimata: `{row['carica_kg']:.2f} kg`")
+      with c3:
+        st.markdown("**Verifiche**")
+        st.write(f"- Ultima Verifica: `{row['ultima_verifica']}`")
+        st.write(f"- Scadenza Attuale: `{row['scadenza_verifica']}`")
+
+      st.markdown("---")
+      tab_fgas, tab_filtri = st.tabs([
+          "1. Compila & Rinnova F-GAS",
+          "2. Rapportino Manutenzione Filtri",
+      ])
+
+      with tab_fgas:
+        with st.form(key=f"form_fgas_{key_id}"):
+          st.markdown("##### Controllo Periodico F-GAS e Rinnovo Annuale")
+
+          # Data intervento di default (data corrente)
+          data_intervento_default = oggi.strftime("%d/%m/%Y")
+
+          # Calcola la nuova scadenza mantenendo GIORNO e MESE della vecchia scadenza e aggiornando all'ANNO CORRENTE
+          scad_precedente = str(row["scadenza_verifica"]).strip()
+          try:
+            dt_vecchia_scad = datetime.strptime(scad_precedente, "%d/%m/%Y")
+            # Sostituisce l'anno con l'anno corrente mantenendo giorno e mese originari
+            dt_nuova_scad = dt_vecchia_scad.replace(year=oggi.year)
+            if dt_nuova_scad < oggi:
+              dt_nuova_scad = dt_nuova_scad.replace(year=oggi.year + 1)
+          except:
+            dt_nuova_scad = oggi + timedelta(days=365)
+
+          nuova_scad_default = dt_nuova_scad.strftime("%d/%m/%Y")
+
+          col_d1, col_d2 = st.columns(2)
+          with col_d1:
+            data_intervento_input = st.text_input(
+                "Data Intervento (Modificabile Manualmente)",
+                value=data_intervento_default,
+                key=f"dt_int_{key_id}",
+            )
+          with col_d2:
+            nuova_scadenza_input = st.text_input(
+                "Nuova Scadenza Impianto (Anno Corrente + Mantenimento Giorno/Mese)",
+                value=nuova_scad_default,
+                key=f"dt_scad_{key_id}",
+            )
+
+          esito_circ1 = st.selectbox(
+              "Esito Circuito 1",
+              ["Assenza Perdite", "Rilevata Perdita"],
+              key=f"es1_{key_id}",
+          )
+          note_fgas = st.text_input(
+              "Note Tecniche / Causa ed Azioni",
+              "Controllo periodico eseguito con esito regolare. Impianto"
+              " rinnovato.",
+              key=f"note_f_{key_id}",
+          )
+
+          btn_fgas = st.form_submit_button(
+              "Genera Certificato Word e Aggiorna Scadenza"
+          )
+          if btn_fgas:
+            if os.path.exists(TEMPLATE_FGAS_PATH):
+              doc = Document(TEMPLATE_FGAS_PATH)
+              mappa_dati = {
+                  "{{UNITA}}": str(row["nr_unita"]),
+                  "{{MARCA}}": str(row["marca"]),
+                  "{{MODELLO}}": str(row["modello_matricola"]),
+                  "{{MATRICOLA}}": matricola_str,
+                  "{{TIPO_GAS}}": str(row["refrigerante"]),
+                  "{{CARICA_KG}}": f"{row['carica_kg']:.2f} kg",
+                  "{{CO2_EQ}}": f"{row['tonn_co2_eq']} tCO2e",
+                  "{{COD_APP}}": str(row["codice_targa"]),
+                  "{{DATA_INTERVENTO}}": data_intervento_input,
+                  "{{SCADENZA_VERIFICA}}": nuova_scadenza_input,
+                  "{{ESITO_CIRC1}}": esito_circ1.upper(),
+                  "{{NOTE_FGAS}}": note_fgas,
+              }
+              sostituisci_testo_docx(doc, mappa_dati)
+              filename_fgas = (
+                  f"Report_FGAS_{row['marca']}_{matricola_str.replace('/', '_').replace(' ', '_')}.docx"
+              )
+              doc.save(filename_fgas)
+
+              # Aggiorna il database con la data intervento e la nuova scadenza
+              aggiorna_scadenza_db(
+                  row["id_macchina"],
+                  data_intervento_input,
+                  nuova_scadenza_input,
+              )
+
+              st.session_state[f"dl_fgas_{key_id}"] = filename_fgas
+              st.success(
+                  f"Certificato generato con intervento in data"
+                  f" {data_intervento_input} e nuova scadenza al"
+                  f" {nuova_scadenza_input}!"
+              )
+              st.rerun()
+            else:
+              st.error(
+                  f"File modello '{TEMPLATE_FGAS_PATH}' non trovato nella"
+                  " directory."
+              )
+
+        if st.session_state.get(f"dl_fgas_{key_id}"):
+          f_path = st.session_state[f"dl_fgas_{key_id}"]
+          if os.path.exists(f_path):
+            with open(f_path, "rb") as f_in:
+              st.download_button(
+                  label="Scarica Certificato F-GAS Aggiornato (.docx)",
+                  data=f_in,
+                  file_name=f_path,
+                  mime=(
+                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  ),
+                  key=f"dl_btn_f_{key_id}",
+              )
+
+      with tab_filtri:
+        with st.form(key=f"form_filt_{key_id}"):
+          st.markdown("##### Rapportino Intervento Filtri & Pulizia")
+          azione_f = st.selectbox(
+              "Azione Eseguita",
+              [
+                  "Pulizia / Spolveratura Filtri",
+                  "Lavaggio Filtri & Sanificazione Vasca",
+                  "Sostituzione Filtri Nuovi",
+              ],
+              key=f"az_{key_id}",
+          )
+          stato_f = st.selectbox(
+              "Stato Post-Intervento",
+              ["Pulito / Ottimale", "Buono", "Da Sostituire"],
+              key=f"st_{key_id}",
+          )
+          note_f = st.text_input(
+              "Note Tecniche",
+              "Eseguita pulizia filtri e controllo flusso d'aria.",
+              key=f"nt_{key_id}",
+          )
+
+          btn_filt = st.form_submit_button("Genera Rapportino Filtri Word")
+          if btn_filt:
+            doc_f = Document()
+            doc_f.add_heading(
+                "RAPPORTINO MANUTENZIONE FILTRI & INTERVENTO ORDINARIO", level=1
+            )
+            doc_f.add_paragraph(
+                "Sito: McArthurGlen Designer Outlet Castel Romano - Data:"
+                f" {datetime.now().strftime('%d/%m/%Y %H:%M')}\nImpianto:"
+                f" {row['nr_unita']}"
+            )
+            doc_f.add_paragraph(
+                f"DETTAGLI APPARECCHIATURA:\nMarca/Modello: {row['marca']}"
+                f" {row['modello_matricola']} | Targa: {row['codice_targa']}"
+            )
+            doc_f.add_paragraph(
+                f"INTERVENTO:\nAzione: {azione_f} | Stato:"
+                f" {stato_f.upper()}\nNote: {note_f}"
+            )
+            doc_f.add_paragraph(
+                "TECNICO ESECUTORE:\nCBRE GWS Technical Division - ANTONIO"
+                " MARTINEZ (Cert. PR-0148807)"
+            )
+
+            filename_filt = (
+                f"Rapportino_Filtri_{row['nr_unita'].replace(' ', '_')}.docx"
+            )
+            doc_f.save(filename_filt)
+            st.session_state[f"dl_filt_{key_id}"] = filename_filt
+            st.success("Rapportino filtri generato con successo!")
+            st.rerun()
+
+        if st.session_state.get(f"dl_filt_{key_id}"):
+          f_path_filt = st.session_state[f"dl_filt_{key_id}"]
+          if os.path.exists(f_path_filt):
+            with open(f_path_filt, "rb") as f_in_f:
+              st.download_button(
+                  label="Scarica Rapportino Word Filtri",
+                  data=f_in_f,
+                  file_name=f_path_filt,
+                  mime=(
+                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  ),
+                  key=f"dl_btn_filt_{key_id}",
+              )
 
 elif menu == "Manutenzione Preventiva & F-GAS":
-    st.title("Checklist Preventiva e Scadenze F-GAS 2026")
-    st.markdown("Panoramica completa di tutte le apparecchiature F-GAS attive con scadenze aggiornate e tonnellate CO2 eq.")
-    
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    df_prev = pd.read_sql("SELECT nr_unita, marca, modello_matricola, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, tonn_co2_eq, carica_kg FROM macchine_hvac", conn)
-    conn.close()
-    
-    st.dataframe(df_prev, use_container_width=True, hide_index=True)
-    
-    excel_scadenze = "Scadenze_F_GAS_2026.xlsx"
-    df_prev.to_excel(excel_scadenze, index=False)
-    with open(excel_scadenze, "rb") as f_scad:
-        st.download_button(
-            label="Scarica Tabella Scadenze F-GAS in formato Excel",
-            data=f_scad,
-            file_name=excel_scadenze,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_scad_fgas"
-        )
+  st.title("Checklist Preventiva e Scadenze F-GAS 2026")
+  st.markdown(
+      "Panoramica completa di tutte le apparecchiature F-GAS attive con"
+      " scadenze aggiornate e tonnellate CO2 eq."
+  )
+
+  conn = sqlite3.connect(DB_PATH, timeout=10.0)
+  df_prev = pd.read_sql(
+      "SELECT nr_unita, marca, modello_matricola, refrigerante, codice_targa,"
+      " ultima_verifica, scadenza_verifica, tonn_co2_eq, carica_kg FROM"
+      " macchine_hvac",
+      conn,
+  )
+  conn.close()
+
+  st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+  excel_scadenze = "Scadenze_F_GAS_2026.xlsx"
+  df_prev.to_excel(excel_scadenze, index=False)
+  with open(excel_scadenze, "rb") as f_scad:
+    st.download_button(
+        label="Scarica Tabella Scadenze F-GAS in formato Excel",
+        data=f_scad,
+        file_name=excel_scadenze,
+        mime=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        key="dl_scad_fgas",
+    )
 
 elif menu == "ODL Correttiva / A Chiamata":
-    st.title("Gestione ODL Correttivi / Extra a Chiamata")
-    st.markdown("Inserimento e verifica degli interventi straordinari.")
+  st.title("Gestione ODL Correttivi / Extra a Chiamata")
+  st.markdown("Inserimento e verifica degli interventi straordinari.")
 
-    tab1, tab2 = st.tabs(["Nuovo ODL / Inoltro", "Archivio ODL a Chiamata"])
+  tab1, tab2 = st.tabs(["Nuovo ODL / Inoltro", "Archivio ODL a Chiamata"])
 
-    with tab1:
-        with st.form("form_odl_chiamata"):
-            st.subheader("Registrazione / Chiusura ODL Straordinario")
-            c_odl = st.text_input("Codice ODL", value="C63380570")
-            richiedente = st.text_input("Richiedente", value="Security Castel Romano")
-            descrizione = st.text_area("Descrizione Lavoro", value="Intervento di regolazione e manutenzione straordinaria impianti")
-            data_limite = st.text_input("Data e Ora Riferimento", value=datetime.now().strftime("%d/%m/%Y %H:%M"))
-            
-            st.markdown("---")
-            ora_inizio = st.text_input("Ora Inizio", value="19:00")
-            ora_fine = st.text_input("Ora Fine", value="19:30")
-            esito = st.selectbox("Intervento Completato", ["SI", "NO"])
-            note_odl = st.text_area("Note dell'Intervento / Ricambi Utilizzati")
-            
-            salva_odl = st.form_submit_button("Registra e Chiudi ODL")
-            if salva_odl:
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute("""
+  with tab1:
+    with st.form("form_odl_chiamata"):
+      st.subheader("Registrazione / Chiusura ODL Straordinario")
+      c_odl = st.text_input("Codice ODL", value="C63380570")
+      richiedente = st.text_input("Richiedente", value="Security Castel Romano")
+      descrizione = st.text_area(
+          "Descrizione Lavoro",
+          value=(
+              "Intervento di regolazione e manutenzione straordinaria impianti"
+          ),
+      )
+      data_limite = st.text_input(
+          "Data e Ora Riferimento",
+          value=datetime.now().strftime("%d/%m/%Y %H:%M"),
+      )
+
+      st.markdown("---")
+      ora_inizio = st.text_input("Ora Inizio", value="19:00")
+      ora_fine = st.text_input("Ora Fine", value="19:30")
+      esito = st.selectbox("Intervento Completato", ["SI", "NO"])
+      note_odl = st.text_area("Note dell'Intervento / Ricambi Utilizzati")
+
+      salva_odl = st.form_submit_button("Registra e Chiudi ODL")
+      if salva_odl:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
                     INSERT INTO odl_chiamata (codice_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note, stato)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (c_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note_odl, "Completato"))
-                conn.commit()
-                conn.close()
-                st.success(f"ODL {c_odl} registrato e archiviato con successo!")
-
-    with tab2:
-        st.subheader("Storico ODL Registrati")
-        conn = sqlite3.connect(DB_PATH)
-        df_odl = pd.read_sql("SELECT * FROM odl_chiamata", conn)
+                """,
+            (
+                c_odl,
+                richiedente,
+                descrizione,
+                data_limite,
+                ora_inizio,
+                ora_fine,
+                esito,
+                note_odl,
+                "Completato",
+            ),
+        )
+        conn.commit()
         conn.close()
-        
-        if not df_odl.empty:
-            st.dataframe(df_odl, use_container_width=True)
-            
-            excel_filename = "Archivio_ODL_Castel_Romano.xlsx"
-            df_odl.to_excel(excel_filename, index=False)
-            
-            with open(excel_filename, "rb") as f_excel:
-                st.download_button(
-                    label="Scarica Archivio ODL in formato Excel",
-                    data=f_excel,
-                    file_name=excel_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="btn_dl_archivio_odl"
-                )
-        else:
-            st.info("Nessun ODL a chiamata registrato nel database locale.")
+        st.success(f"ODL {c_odl} registrato e archiviato con successo!")
+
+  with tab2:
+    st.subheader("Storico ODL Registrati")
+    conn = sqlite3.connect(DB_PATH)
+    df_odl = pd.read_sql("SELECT * FROM odl_chiamata", conn)
+    conn.close()
+
+    if not df_odl.empty:
+      st.dataframe(df_odl, use_container_width=True)
+
+      excel_filename = "Archivio_ODL_Castel_Romano.xlsx"
+      df_odl.to_excel(excel_filename, index=False)
+
+      with open(excel_filename, "rb") as f_excel:
+        st.download_button(
+            label="Scarica Archivio ODL in formato Excel",
+            data=f_excel,
+            file_name=excel_filename,
+            mime=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            key="btn_dl_archivio_odl",
+        )
+    else:
+      st.info("Nessun ODL a chiamata registrato nel database locale.")
 
 elif menu == "Profilo & F-GAS":
-    st.title("Certificato e Profilo Tecnico")
-    st.markdown("Dettagli ufficiali dell'abilitazione registrata per operare sugli impianti del centro.")
-    
-    st.success("Tecnico: Sandor Antonio Leon Martinez")
-    st.write("**Codice Fiscale:** LNMSDR79801Z504U")
-    st.write("**Ente Certificatore:** IMQ S.p.A. (Accredia)")
-    st.write("**N. Iscrizione Registro F-GAS:** PR0148807")
-    st.write("**N. Certificato:** 2067P-1912001 (Scadenza: 03/12/2029)")
-    st.write("**Categoria:** Categoria I (Senza limiti di carica frigorifera)")
+  st.title("Certificato e Profilo Tecnico")
+  st.markdown(
+      "Dettagli ufficiali dell'abilitazione registrata per operare sugli"
+      " impianti del centro."
+  )
+
+  st.success("Tecnico: Sandor Antonio Leon Martinez")
+  st.write("**Codice Fiscale:** LNMSDR79801Z504U")
+  st.write("**Ente Certificatore:** IMQ S.p.A. (Accredia)")
+  st.write("**N. Iscrizione Registro F-GAS:** PR0148807")
+  st.write("**N. Certificato:** 2067P-1912001 (Scadenza: 03/12/2029)")
+  st.write("**Categoria:** Categoria I (Senza limiti di carica frigorifera)")
