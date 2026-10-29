@@ -45,7 +45,8 @@ def init_db_mappa():
                 ultima_verifica TEXT,
                 scadenza_verifica TEXT,
                 macro_area TEXT,
-                tonn_co2_eq REAL
+                tonn_co2_eq REAL,
+                carica_kg REAL
             )
         ''')
         
@@ -68,10 +69,13 @@ def init_db_mappa():
                 if pd.isna(tonn_co2):
                     tonn_co2 = 0.0
                 
+                # Calcolo stima carica in kg da tCO2e (GWP R410A = 2088)
+                carica_kg = (tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0
+                
                 cursor.execute('''
                     INSERT OR REPLACE INTO macchine_hvac 
-                    (id_macchina, nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, n_circuiti, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id_macchina, nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, n_circuiti, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq, carica_kg)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     id_unic,
                     nr_u,
@@ -86,7 +90,8 @@ def init_db_mappa():
                     str(row.get("Ultima Verifica RCEE", "")),
                     str(row.get("Scadenza Verifica", "")),
                     macro,
-                    float(tonn_co2)
+                    float(tonn_co2),
+                    float(carica_kg)
                 ))
                     
         conn.commit()
@@ -199,7 +204,7 @@ if menu == "Ricerca & Planimetria Impianti":
                                 "{{MODELLO}}": str(row['modello_matricola']),
                                 "{{MATRICOLA}}": matricola_str,
                                 "{{TIPO_GAS}}": str(row['refrigerante']),
-                                "{{CARICA_KG}}": f"{row['potenza_kw']} kW",
+                                "{{CARICA_KG}}": f"{row['carica_kg']:.2f} kg",
                                 "{{CO2_EQ}}": f"{row['tonn_co2_eq']} tCO2e",
                                 "{{COD_APP}}": str(row['codice_targa']),
                                 "{{DATA_INTERVENTO}}": dt_oggi.strftime("%d/%m/%Y"),
@@ -254,7 +259,7 @@ elif menu == "Manutenzione Preventiva & F-GAS":
     st.markdown("Panoramica completa di tutte le 211 unita HVAC, scadenze di verifica e tonnellate di CO2 equivalente.")
     
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    df_prev = pd.read_sql("SELECT nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq FROM macchine_hvac", conn)
+    df_prev = pd.read_sql("SELECT nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq, carica_kg FROM macchine_hvac", conn)
     conn.close()
     
     col_f1, col_f2 = st.columns(2)
