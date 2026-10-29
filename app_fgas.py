@@ -69,7 +69,6 @@ def init_db_mappa():
                 if pd.isna(tonn_co2):
                     tonn_co2 = 0.0
                 
-                # Calcolo stima carica in kg da tCO2e (GWP R410A = 2088)
                 carica_kg = (tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0
                 
                 cursor.execute('''
@@ -136,38 +135,46 @@ if menu == "Ricerca & Planimetria Impianti":
     df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
     conn.close()
 
-    search_query = st.text_input("Ricerca rapida per Nome Negozio, Numero Unita o Marca (es. Levi's, 130, Trane):", "").strip().lower()
+    # Selettore chiaro per la modalita di visualizzazione e filtraggio
+    modo_vista = st.radio("Seleziona modalita di navigazione:", ["Navigazione per Piazza / Zona (con pallini stato)", "Filtro per Quadro Elettrico", "Ricerca Rapida Testo"], horizontal=True)
+
+    unita_filtrate = pd.DataFrame()
+
+    if modo_vista == "Navigazione per Piazza / Zona (con pallini stato)":
+        piazze_disponibili = sorted(df_impianti["macro_area"].dropna().unique())
+        piazza_scelta = st.selectbox("Seleziona Piazza / Zona del Centro:", piazze_disponibili)
+        unita_filtrate = df_impianti[df_impianti["macro_area"] == piazza_scelta]
+        st.info(f"Trovate **{len(unita_filtrate)} unita HVAC** in `{piazza_scelta}`")
+        
+    elif modo_vista == "Filtro per Quadro Elettrico":
+        quadri = sorted(df_impianti["quadro_elettrico"].dropna().unique())
+        quadro_scelto = st.selectbox("Seleziona Quadro / Interruttore (Planimetria)", quadri)
+        unita_filtrate = df_impianti[df_impianti["quadro_elettrico"] == quadro_scelto]
+        st.info(f"Trovate **{len(unita_filtrate)} unita HVAC** collegate al quadro `{quadro_scelto}`")
+        
+    else:
+        search_query = st.text_input("Ricerca rapida per Nome Negozio, Numero Unita o Marca (es. Levi's, 130, Trane):", "").strip().lower()
+        if search_query:
+            unita_filtrate = df_impianti[
+                df_impianti['ubicazione_negozio'].astype(str).str.lower().str.contains(search_query) |
+                df_impianti['nr_unita'].astype(str).str.lower().str.contains(search_query) |
+                df_impianti['marca'].astype(str).str.lower().str.contains(search_query) |
+                df_impianti['modello_matricola'].astype(str).str.lower().str.contains(search_query)
+            ]
+            st.subheader(f"Risultati della ricerca per '{search_query}': ({len(unita_filtrate)} macchine trovate)")
+        else:
+            unita_filtrate = df_impianti.copy()
 
     st.markdown("---")
-    
-    if search_query:
-        unita_filtrate = df_impianti[
-            df_impianti['ubicazione_negozio'].astype(str).str.lower().str.contains(search_query) |
-            df_impianti['nr_unita'].astype(str).str.lower().str.contains(search_query) |
-            df_impianti['marca'].astype(str).str.lower().str.contains(search_query) |
-            df_impianti['modello_matricola'].astype(str).str.lower().str.contains(search_query)
-        ]
-        st.subheader(f"Risultati della ricerca per '{search_query}': ({len(unita_filtrate)} macchine trovate)")
-    else:
-        tab_piazze, tab_quadri = st.tabs(["Navigazione per Piazze / Mappa Centro", "Filtro per Quadro Elettrico"])
-        
-        with tab_piazze:
-            piazze_disponibili = sorted(df_impianti["macro_area"].dropna().unique())
-            piazza_scelta = st.selectbox("Seleziona Piazza / Zona del Centro:", piazze_disponibili)
-            unita_filtrate = df_impianti[df_impianti["macro_area"] == piazza_scelta]
-            st.info(f"Trovate **{len(unita_filtrate)} unita HVAC** in `{piazza_scelta}`")
-            
-        with tab_quadri:
-            quadri = sorted(df_impianti["quadro_elettrico"].dropna().unique())
-            quadro_scelto = st.selectbox("Seleziona Quadro / Interruttore (Planimetria)", quadri)
-            unita_filtrate = df_impianti[df_impianti["quadro_elettrico"] == quadro_scelto]
-            st.info(f"Trovate **{len(unita_filtrate)} unita HVAC** collegate al quadro `{quadro_scelto}`")
 
     for idx, row in unita_filtrate.iterrows():
         matricola_str = str(row['modello_matricola']).strip()
         key_id = str(row['id_macchina']).replace(" ", "_").replace("/", "_")
         
-        with st.expander(f"Unita {row['nr_unita']} - {row['marca']} ({row['ubicazione_negozio']}) - [{row['macro_area']}]"):
+        # Pallino colorato in base allo stato o verifica
+        stato_pallino = "🟢" if str(row['scadenza_verifica']) != "" else "🟡"
+        
+        with st.expander(f"{stato_pallino} Unita {row['nr_unita']} - {row['marca']} ({row['ubicazione_negozio']}) - [{row['macro_area']}]"):
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown("**Dati Tecnici**")
