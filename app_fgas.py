@@ -14,7 +14,7 @@ def init_db_mappa():
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS odl_chiamata (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 codice_odl TEXT,
@@ -27,10 +27,10 @@ def init_db_mappa():
                 note TEXT,
                 stato TEXT
             )
-        ''')
+        """)
 
         cursor.execute('DROP TABLE IF EXISTS macchine_hvac')
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE macchine_hvac (
                 id_macchina TEXT PRIMARY KEY,
                 nr_unita TEXT,
@@ -46,14 +46,17 @@ def init_db_mappa():
                 scadenza_verifica TEXT,
                 macro_area TEXT,
                 tonn_co2_eq REAL,
-                carica_kg REAL
+                carica_kg REAL,
+                f_gas_attivo TEXT,
+                data_scadenza_dt TEXT
             )
-        ''')
+        """)
         
         if os.path.exists(EXCEL_PATH):
             df_excel = pd.read_excel(EXCEL_PATH, sheet_name='Elenco di FGAS')
             for _, row in df_excel.iterrows():
-                if str(row.get("F-Gas?", "S")).strip().upper() == "N":
+                f_gas_stat = str(row.get("F-Gas?", "S")).strip().upper()
+                if f_gas_stat == "N":
                     continue
                     
                 descrizione = str(row.get("Descrizione", "")).strip()
@@ -76,21 +79,24 @@ def init_db_mappa():
                     ultima_v_str = str(ultima_v)
                     
                 scad_v = row.get("Scadenza verifica", "")
+                scad_v_dt_str = ""
                 if pd.notna(scad_v) and isinstance(scad_v, datetime):
                     scad_v_str = scad_v.strftime("%d/%m/%Y")
+                    scad_v_dt_str = scad_v.strftime("%Y-%m-%d")
                 else:
                     scad_v_str = str(scad_v)
+                    scad_v_dt_str = str(scad_v)
                 
                 macro = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
                 carica_kg = (tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0
                 
                 id_unic = f"{descrizione}_{mod_mat}_{cod_app}"
                 
-                cursor.execute('''
+                cursor.execute("""
                     INSERT OR REPLACE INTO macchine_hvac 
-                    (id_macchina, nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, n_circuiti, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq, carica_kg)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
+                    (id_macchina, nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, n_circuiti, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq, carica_kg, f_gas_attivo, data_scadenza_dt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
                     id_unic,
                     descrizione,
                     marca,
@@ -105,7 +111,9 @@ def init_db_mappa():
                     scad_v_str,
                     macro,
                     float(tonn_co2),
-                    float(carica_kg)
+                    float(carica_kg),
+                    f_gas_stat,
+                    scad_v_dt_str
                 ))
                     
         conn.commit()
@@ -143,6 +151,8 @@ menu = st.sidebar.selectbox(
     ]
 )
 
+oggi = datetime.now()
+
 if menu == "Ricerca & Planimetria Impianti":
     st.title("Gestione Impianti HVAC - Castel Romano (Registro Ufficiale 2026)")
     
@@ -150,17 +160,41 @@ if menu == "Ricerca & Planimetria Impianti":
     df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
     conn.close()
 
-    modo_vista = st.radio("Seleziona modalita di navigazione:", ["Navigazione per Collocazione / Zona", "Ricerca Rapida Testo"], horizontal=True)
+    modo_vista = st.radio("Seleziona modalita di navigazione:", ["Filtro Rapido per Stato / Scadenza", "Ricerca per Negozio / Unita", "Tutti gli Impianti"], horizontal=True)
 
     unita_filtrate = pd.DataFrame()
 
-    if modo_vista == "Navigazione per Collocazione / Zona":
-        collocazioni = sorted(df_impianti["macro_area"].dropna().unique())
-        coll_scelta = st.selectbox("Seleziona Collocazione / Area:", collocazioni)
-        unita_filtrate = df_impianti[df_impianti["macro_area"] == coll_scelta]
-        st.info(f"Trovate **{len(unita_filtrate)} unita HVAC** in `{coll_scelta}`")
-    else:
-        search_query = st.text_input("Ricerca rapida per Descrizione / Unita, Marca o Codice Targa:", "").strip().lower()
+    if modo_vista == "Filtro Rapido per Stato / Scadenza":
+        scelta_stato = st.selectbox("Filtra per Stato Impianto:", ["Tutti", "🟢 Regolari", "🟡 In Scadenza (30 gg)", "🔴 Scaduti"])
+        
+        temp_list = []
+        for idx, row in df_impianti.iterrows():
+            scad_str = str(row['data_scadenza_dt'])
+            try:
+                dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
+                delta = (dt_scad - oggi).days
+            except:
+                delta = 9999
+                
+            if delta < 0:
+                stato = "🔴 Scaduti"
+            elif delta <= 30:
+                stato = "🟡 In Scadenza (30 gg)"
+            else:
+                stato = "🟢 Regolari"
+                
+            if scelta_stato == "Tutti" or scelta_stato == stato:
+                temp_list.append(row)
+                
+        if temp_list:
+            unita_filtrate = pd.DataFrame(temp_list)
+        else:
+            unita_filtrate = pd.DataFrame(columns=df_impianti.columns)
+            
+        st.info(f"Trovate **{len(unita_filtrate)} unita HVAC** per lo stato `{scelta_stato}`")
+        
+    elif modo_vista == "Ricerca per Negozio / Unita":
+        search_query = st.text_input("Inserisci nome negozio, numero unita, marca o targa (es. Levi's, 129B, Trane, 31*...):", "").strip().lower()
         if search_query:
             unita_filtrate = df_impianti[
                 df_impianti['ubicazione_negozio'].astype(str).str.lower().str.contains(search_query) |
@@ -172,6 +206,8 @@ if menu == "Ricerca & Planimetria Impianti":
             st.subheader(f"Risultati della ricerca per '{search_query}': ({len(unita_filtrate)} macchine trovate)")
         else:
             unita_filtrate = df_impianti.copy()
+    else:
+        unita_filtrate = df_impianti.copy()
 
     st.markdown("---")
 
@@ -179,9 +215,24 @@ if menu == "Ricerca & Planimetria Impianti":
         matricola_str = str(row['modello_matricola']).strip()
         key_id = str(row['id_macchina']).replace(" ", "_").replace("/", "_")
         
-        stato_pallino = "🟢" if str(row['scadenza_verifica']) != "" else "🟡"
+        scad_str = str(row['data_scadenza_dt'])
+        try:
+            dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
+            delta = (dt_scad - oggi).days
+        except:
+            delta = 9999
+            
+        if delta < 0:
+            stato_pallino = "🔴"
+            stato_txt = "SCADUTO"
+        elif delta <= 30:
+            stato_pallino = "🟡"
+            stato_txt = "IN SCADENZA"
+        else:
+            stato_pallino = "🟢"
+            stato_txt = "REGOLARE"
         
-        with st.expander(f"{stato_pallino} Impianto {row['nr_unita']} - {row['marca']} (Targa: {row['codice_targa']})"):
+        with st.expander(f"{stato_pallino} Impianto {row['nr_unita']} - {row['marca']} (Targa: {row['codice_targa']}) [{stato_txt}]"):
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown("**Dati Tecnici**")
@@ -313,10 +364,10 @@ elif menu == "ODL Correttiva / A Chiamata":
             if salva_odl:
                 conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
-                cursor.execute('''
+                cursor.execute("""
                     INSERT INTO odl_chiamata (codice_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note, stato)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (c_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note_odl, "Completato"))
+                """, (c_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note_odl, "Completato"))
                 conn.commit()
                 conn.close()
                 st.success(f"ODL {c_odl} registrato e archiviato con successo!")
