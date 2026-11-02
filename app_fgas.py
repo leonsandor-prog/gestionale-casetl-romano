@@ -12,6 +12,9 @@ def init_db_mappa():
     cursor = conn.cursor()
 
     try:
+        # Ricostruzione pulita della tabella per allineare lo schema a 20 colonne
+        cursor.execute("DROP TABLE IF EXISTS macchine_hvac")
+
         # Tabella ODL Correttivi & Straordinari (retention 2+ anni)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS odl_chiamata (
@@ -30,7 +33,7 @@ def init_db_mappa():
             )
         """)
 
-        # Tabella macchine HVAC mappata sul nuovo Excel assegnato
+        # Tabella macchine HVAC
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS macchine_hvac (
                 id_macchina TEXT PRIMARY KEY,
@@ -56,9 +59,8 @@ def init_db_mappa():
             )
         """)
 
-        # Popolamento iniziale da Excel se la tabella è vuota
-        cursor.execute("SELECT COUNT(*) FROM macchine_hvac")
-        if cursor.fetchone()[0] == 0 and os.path.exists(EXCEL_PATH):
+        # Popolamento iniziale da Excel se il file esiste
+        if os.path.exists(EXCEL_PATH):
             df_excel = pd.read_excel(EXCEL_PATH, sheet_name="Master F-GAS 2026")
             for _, row in df_excel.iterrows():
                 f_gas_num = str(row.get("F-GAS N°", "")).strip()
