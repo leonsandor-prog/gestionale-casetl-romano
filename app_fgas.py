@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 
@@ -12,7 +12,7 @@ def init_db_mappa():
     cursor = conn.cursor()
 
     try:
-        # Tabella ODL Correttivi & Straordinari (retention 2+ anni)
+        # Tabella ODL
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS odl_chiamata (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +30,7 @@ def init_db_mappa():
             )
         """)
 
-        # Tabella macchine HVAC mappata sul nuovo Excel assegnato
+        # Creazione tabella se non esiste
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS macchine_hvac (
                 id_macchina TEXT PRIMARY KEY,
@@ -56,7 +56,38 @@ def init_db_mappa():
             )
         """)
 
-        # Popolamento iniziale da Excel se la tabella è vuota
+        # Verifica se la tabella esistente ha le nuove colonne. In caso contrario, resetta la tabella per aggiornare la struttura dal nuovo Excel.
+        cursor.execute("PRAGMA table_info(macchine_hvac)")
+        colonne_db = [col[1] for col in cursor.fetchall()]
+        
+        if "zona_designata" not in colonne_db or "operatore_assegnato" not in colonne_db:
+            cursor.execute("DROP TABLE macchine_hvac")
+            cursor.execute("""
+                CREATE TABLE macchine_hvac (
+                    id_macchina TEXT PRIMARY KEY,
+                    f_gas_n TEXT,
+                    collocazione TEXT,
+                    nr_unita TEXT,
+                    descrizione_impianto TEXT,
+                    codice_targa TEXT,
+                    tipologia TEXT,
+                    marca TEXT,
+                    modello TEXT,
+                    refrigerante TEXT,
+                    tonn_co2_eq REAL,
+                    carica_kg REAL,
+                    operatore_assegnato TEXT,
+                    zona_designata TEXT,
+                    ultima_verifica TEXT,
+                    scadenza_verifica TEXT,
+                    data_scadenza_dt TEXT,
+                    filtro_dimensioni TEXT,
+                    filtro_quantita INTEGER,
+                    stato_manutenzione TEXT
+                )
+            """)
+
+        # Popola/Ripopola se vuota
         cursor.execute("SELECT COUNT(*) FROM macchine_hvac")
         if cursor.fetchone()[0] == 0 and os.path.exists(EXCEL_PATH):
             df_excel = pd.read_excel(EXCEL_PATH, sheet_name="Master F-GAS 2026")
@@ -99,7 +130,35 @@ init_db_mappa()
 
 st.set_page_config(page_title="Gestione F-GAS & Manutenzione Castel Romano", layout="wide")
 
-# --- SISTEMA DI LOGIN & PROFILAZIONE (LUL 3177) ---
+# Funzione ausiliaria per garantire la presenza delle colonne nel DataFrame
+def carica_dataframe_sicuro():
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    df = pd.read_sql("SELECT * FROM macchine_hvac", conn)
+    conn.close()
+    
+    colonne_richieste = {
+        "operatore_assegnato": "Antonio",
+        "zona_designata": "Castel Romano",
+        "nr_unita": "N/D",
+        "marca": "N/D",
+        "modello": "N/D",
+        "codice_targa": "N/D",
+        "refrigerante": "R-410A",
+        "tonn_co2_eq": 0.0,
+        "f_gas_n": "N/D",
+        "scadenza_verifica": "01/01/2027",
+        "data_scadenza_dt": "2027-01-01",
+        "filtro_dimensioni": "",
+        "filtro_quantita": 1
+    }
+    
+    for col, default_val in colonne_richieste.items():
+        if col not in df.columns:
+            df[col] = default_val
+            
+    return df
+
+# --- LOGIN & PROFILAZIONE ---
 st.sidebar.title("CBRE GWS - Castel Romano")
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔐 Accesso Operatore")
@@ -127,7 +186,6 @@ if profilo_selezionato != "Seleziona...":
 
 st.sidebar.markdown("---")
 
-# --- MENU NAVIGAZIONE ---
 if autorizzato_fgas:
     menu = st.sidebar.selectbox(
         "Seleziona Modulo",
@@ -157,26 +215,11 @@ oggi = datetime.now()
 if menu == "Benvenuto":
     st.title("CBRE Technical Division - Castel Romano")
     st.info("👈 Seleziona il tuo profilo nella barra laterale per accedere al gestionale.")
-    st.markdown("""
-    ### Moduli Disponibili:
-    - **Dashboard Operatori**: Visualizzazione rapida delle macchine assegnate con indicatori di stato (🟢 🟡 🔴).
-    - **Ricerca & Gestione Impianti**: Consultazione delle schede tecniche e aggiornamento filtri in loco.
-    - **Manutenzione & F-GAS**: Checklist operative per pulizia batterie, scarico condensa e gestione registri (riservato admin).
-    - **ODL Correttivi**: Gestione e download dello storico interventi (retention 2+ anni).
-    """)
 
 elif menu == "Dashboard Operatori (Pallini Stato)":
     st.title("Dashboard Operatori - Castel Romano 2026")
-    st.markdown("Panoramica delle unità assegnate e stato di manutenzione in tempo reale.")
+    df_impianti = carica_dataframe_sicuro()
 
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
-    conn.close()
-
-    if "operatore_assegnato" not in df_impianti.columns:
-        df_impianti["operatore_assegnato"] = ""
-
-    # Selettore operatore rapido
     op_filtro = st.radio(
         "Filtra per Operatore:",
         ["Tutti", "Antonio", "Pino", "Gianluca", "Johann"],
@@ -184,14 +227,14 @@ elif menu == "Dashboard Operatori (Pallini Stato)":
     )
 
     if op_filtro != "Tutti":
-        df_op = df_impianti[df_impianti["operatore_assegnato"].str.lower() == op_filtro.lower()]
+        df_op = df_impianti[df_impianti["operatore_assegnato"].astype(str).str.lower() == op_filtro.lower()]
     else:
         df_op = df_impianti
 
     st.subheader(f"Unità HVAC Associate ({len(df_op)} impianti)")
 
     for idx, row in df_op.iterrows():
-        scad_str = str(row["data_scadenza_dt"])
+        scad_str = str(row.get("data_scadenza_dt", "2027-01-01"))
         try:
             dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
             delta = (dt_scad - oggi).days
@@ -214,10 +257,7 @@ elif menu == "Dashboard Operatori (Pallini Stato)":
 
 elif menu == "Ricerca & Gestione Impianti":
     st.title("Ricerca Impianti & Aggiornamento Filtri in Loco")
-
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
-    conn.close()
+    df_impianti = carica_dataframe_sicuro()
 
     search_query = st.text_input("Cerca per unità, zona, marca o codice targa:", "").strip().lower()
     if search_query:
@@ -259,11 +299,7 @@ elif menu == "Ricerca & Gestione Impianti":
 
 elif menu in ["Manutenzione Preventiva & Filtri", "Manutenzione Preventiva & F-GAS (Admin)"]:
     st.title("Manutenzione Preventiva & Checklist Operativa")
-    st.markdown("Attività consentite: **Controllo visivo**, **Pulizia interna**, **Pulizia batteria condensazione/espansione**, **Verifica organi di comando**, **Controllo scarico condensa**.")
-
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    df_prev = pd.read_sql("SELECT nr_unita, marca, operatore_assegnato, refrigerante, tonn_co2_eq, zona_designata FROM macchine_hvac", conn)
-    conn.close()
+    df_prev = carica_dataframe_sicuro()[["nr_unita", "marca", "operatore_assegnato", "refrigerante", "tonn_co2_eq", "zona_designata"]]
     st.dataframe(df_prev, use_container_width=True, hide_index=True)
 
 elif menu == "ODL Correttiva / A Chiamata":
@@ -328,4 +364,3 @@ elif menu == "Profilo & F-GAS":
     st.success("Tecnico Amministratore: Sandor Antonio León Martínez")
     st.write("**Codice LUL:** `3177`")
     st.write("**N. Iscrizione Registro F-GAS:** `PR0148807` (Cat. I)")
-    st.info("Accesso completo sbloccato per la gestione dei registri di impianto e conformità normativa.")
