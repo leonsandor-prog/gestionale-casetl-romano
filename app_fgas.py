@@ -6,33 +6,34 @@ from docx import Document
 import streamlit as st
 
 DB_PATH = "castel_romano.db"
-EXCEL_PATH = "F-GAS Impianti attivi 2026.xlsx"
+EXCEL_PATH = "F_GAS_Impianti_Attivi_2026_Assegnato.xlsx"
 TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
 
-
 def init_db_mappa():
-  conn = sqlite3.connect(DB_PATH, timeout=10.0)
-  cursor = conn.cursor()
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    cursor = conn.cursor()
 
-  try:
-    cursor.execute("""
+    try:
+        # Tabella ODL Straordinari / A chiamata
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS odl_chiamata (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 codice_odl TEXT,
                 richiedente TEXT,
                 descrizione TEXT,
-                data_limite TEXT,
+                data_registro TEXT,
                 ora_inizio TEXT,
                 ora_fine TEXT,
                 esito TEXT,
                 note TEXT,
-                stato TEXT
+                stato TEXT,
+                operatore_esecutore TEXT
             )
         """)
 
-    cursor.execute("DROP TABLE IF EXISTS macchine_hvac")
-    cursor.execute("""
-            CREATE TABLE macchine_hvac (
+        # Tabella HVAC con specifica filtri e gestione della retention
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS macchine_hvac (
                 id_macchina TEXT PRIMARY KEY,
                 nr_unita TEXT,
                 marca TEXT,
@@ -49,575 +50,411 @@ def init_db_mappa():
                 tonn_co2_eq REAL,
                 carica_kg REAL,
                 f_gas_attivo TEXT,
-                data_scadenza_dt TEXT
+                data_scadenza_dt TEXT,
+                operatore_assegnato TEXT,
+                filtro_dimensioni TEXT,
+                filtro_quantita INTEGER
             )
         """)
 
-    if os.path.exists(EXCEL_PATH):
-      df_excel = pd.read_excel(EXCEL_PATH, sheet_name="Elenco di FGAS")
-      for _, row in df_excel.iterrows():
-        f_gas_stat = str(row.get("F-Gas?", "S")).strip().upper()
-        if f_gas_stat == "N":
-          continue
+        # Inizializzazione dati da Excel solo se il DB è vuoto per preservare le modifiche in loco
+        cursor.execute("SELECT COUNT(*) FROM macchine_hvac")
+        if cursor.fetchone()[0] == 0 and os.path.exists(EXCEL_PATH):
+            df_excel = pd.read_excel(EXCEL_PATH, sheet_name="Master F-GAS 2026")
+            for _, row in df_excel.iterrows():
+                descrizione = str(row.get("Descrizione Impianto", "")).strip()
+                marca = str(row.get("Marca", "")).strip()
+                mod_mat = str(row.get("Modello", "")).strip()
+                cod_app = str(row.get("Cod. Apparecchiatura", "")).strip()
+                refrigerante = str(row.get("Refrigerante", "R410A")).strip()
+                tonn_co2 = row.get("Tonn. CO2 Eq.", 0.0)
+                if pd.isna(tonn_co2):
+                    tonn_co2 = 0.0
+                operatore = str(row.get("Operatore Assegnato", "")).strip()
+                zona = str(row.get("Zona / Area Designata", "")).strip()
+                unita_str = str(row.get("Unità / Macchina", "")).strip()
 
-        descrizione = str(row.get("Descrizione", "")).strip()
-        marca = str(row.get("Marca", "")).strip()
-        modello = str(row.get("Modello", "")).strip()
-        matricola = str(row.get("Matricola", "")).strip()
-        mod_mat = f"{modello} {matricola}".strip()
+                carica_kg = (tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0
+                id_unic = f"{unita_str}_{mod_mat}_{cod_app}"
 
-        cod_app = str(row.get("Cod. Apparecchiatura", "")).strip()
-        refrigerante = str(row.get("Tipo HCFC", "R410A")).strip()
-
-        tonn_co2 = row.get("Tonn CO2 Eq", 0.0)
-        if pd.isna(tonn_co2):
-          tonn_co2 = 0.0
-
-        ultima_v = row.get("Data ultima verifica", "")
-        if pd.notna(ultima_v) and isinstance(ultima_v, datetime):
-          ultima_v_str = ultima_v.strftime("%d/%m/%Y")
-        else:
-          ultima_v_str = str(ultima_v)
-
-        scad_v = row.get("Scadenza verifica", "")
-        scad_v_dt_str = ""
-        if pd.notna(scad_v) and isinstance(scad_v, datetime):
-          scad_v_str = scad_v.strftime("%d/%m/%Y")
-          scad_v_dt_str = scad_v.strftime("%Y-%m-%d")
-        else:
-          scad_v_str = str(scad_v)
-          scad_v_dt_str = str(scad_v)
-
-        macro = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
-        carica_kg = (tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0
-
-        id_unic = f"{descrizione}_{mod_mat}_{cod_app}"
-
-        cursor.execute(
-            """
+                cursor.execute("""
                     INSERT OR REPLACE INTO macchine_hvac 
-                    (id_macchina, nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, n_circuiti, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq, carica_kg, f_gas_attivo, data_scadenza_dt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-            (
-                id_unic,
-                descrizione,
-                marca,
-                mod_mat,
-                descrizione,
-                "Quadro Generale",
-                float(carica_kg * 1.2),
-                1,
-                refrigerante,
-                cod_app,
-                ultima_v_str,
-                scad_v_str,
-                macro,
-                float(tonn_co2),
-                float(carica_kg),
-                f_gas_stat,
-                scad_v_dt_str,
-            ),
-        )
+                    (id_macchina, nr_unita, marca, modello_matricola, ubicazione_negozio, quadro_elettrico, potenza_kw, n_circuiti, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, macro_area, tonn_co2_eq, carica_kg, f_gas_attivo, data_scadenza_dt, operatore_assegnato, filtro_dimensioni, filtro_quantita)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    id_unic, unita_str, marca, mod_mat, zona, "Quadro Generale", 
+                    float(carica_kg * 1.2), 1, refrigerante, cod_app, 
+                    "01/01/2026", "01/01/2027", "MCARTHUR_RM", float(tonn_co2), 
+                    float(carica_kg), "S", "2027-01-01", operatore, "", 1
+                ))
 
-    conn.commit()
-  finally:
-    conn.close()
-
+        conn.commit()
+    finally:
+        conn.close()
 
 def aggiorna_scadenza_db(id_macchina, nuova_data_str, nuova_scad_str):
-  conn = sqlite3.connect(DB_PATH, timeout=10.0)
-  cursor = conn.cursor()
-  cursor.execute(
-      """
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    cursor = conn.cursor()
+    cursor.execute("""
         UPDATE macchine_hvac 
         SET ultima_verifica = ?, scadenza_verifica = ?, data_scadenza_dt = ?
         WHERE id_macchina = ?
-    """,
-      (
-          nuova_data_str,
-          nuova_scad_str,
-          datetime.strptime(nuova_scad_str, "%d/%m/%Y").strftime("%Y-%m-%d"),
-          id_macchina,
-      ),
-  )
-  conn.commit()
-  conn.close()
-
+    """, (
+        nuova_data_str, 
+        nuova_scad_str, 
+        datetime.strptime(nuova_scad_str, "%d/%m/%Y").strftime("%Y-%m-%d"), 
+        id_macchina
+    ))
+    conn.commit()
+    conn.close()
 
 def sostituisci_testo_docx(doc, mappa_sostituzioni):
-  for p in doc.paragraphs:
-    for chiave, valore in mappa_sostituzioni.items():
-      if chiave in p.text:
-        p.text = p.text.replace(chiave, str(valore))
-
-  for table in doc.tables:
-    for row in table.rows:
-      for cell in row.cells:
-        for p in cell.paragraphs:
-          for chiave, valore in mappa_sostituzioni.items():
+    for p in doc.paragraphs:
+        for chiave, valore in mappa_sostituzioni.items():
             if chiave in p.text:
-              p.text = p.text.replace(chiave, str(valore))
+                p.text = p.text.replace(chiave, str(valore))
 
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for chiave, valore in mappa_sostituzioni.items():
+                        if chiave in p.text:
+                            p.text = p.text.replace(chiave, str(valore))
 
 init_db_mappa()
 
-st.set_page_config(
-    page_title="Gestione F-GAS & Manutenzione Castel Romano", layout="wide"
-)
+st.set_page_config(page_title="CBRE GWS - Castel Romano HVAC", layout="wide")
+
+# --- LOGIN E PROFILAZIONE UTENTE ---
 st.sidebar.title("CBRE GWS - Castel Romano")
-st.sidebar.markdown("**Tecnico:** Sandor Antonio Leon Martinez")
-st.sidebar.markdown("**Certificazione F-GAS:** PR0148807 (Cat. I)")
+st.sidebar.markdown("### 🔐 Autenticazione")
 
-menu = st.sidebar.selectbox(
-    "Seleziona Modulo",
-    [
-        "Ricerca & Planimetria Impianti",
-        "Manutenzione Preventiva & F-GAS",
-        "ODL Correttiva / A Chiamata",
-        "Profilo & F-GAS",
-    ],
+utente_login = st.sidebar.selectbox(
+    "Seleziona Tecnico / Operatore:",
+    ["Seleziona...", "Antonio (Lead / F-GAS)", "Pino", "Gianluca", "Johann"]
 )
 
+if "autorizzato_fgas" not in st.session_state:
+    st.session_state["autorizzato_fgas"] = False
+if "operatore_corrente" not in st.session_state:
+    st.session_state["operatore_corrente"] = ""
+
+if utente_login != "Seleziona...":
+    if "Antonio" in utente_login:
+        codice_id = st.sidebar.text_input("Inserisci Codice LUL (PIN):", type="password")
+        if codice_id == "3177":
+            st.session_state["autorizzato_fgas"] = True
+            st.session_state["operatore_corrente"] = "Antonio"
+            st.sidebar.success("✅ Accesso Admin F-GAS Abilitato")
+            st.sidebar.markdown("**Certificazione:** PR0148807 (Cat. I)")
+        elif codice_id != "":
+            st.sidebar.error("❌ Codice LUL Errato")
+            st.session_state["autorizzato_fgas"] = False
+    else:
+        st.session_state["autorizzato_fgas"] = False
+        st.session_state["operatore_corrente"] = utente_login
+        st.sidebar.info(f"ℹ️ Accesso Operativo: {utente_login}")
+
+# MENU DINAMICO IN BASE AI PERMESSI
+opzioni_menu = ["Dashboard Operatori", "Ricerca & Planimetria Impianti", "ODL Correttiva / Extra"]
+if st.session_state["autorizzato_fgas"]:
+    opzioni_menu.insert(1, "Registro F-GAS & Scadenze (Riservato)")
+    opzioni_menu.append("Profilo & Abilitazioni F-GAS")
+
+menu = st.sidebar.selectbox("Seleziona Modulo Operativo", opzioni_menu)
 oggi = datetime.now()
 
-if menu == "Ricerca & Planimetria Impianti":
-  st.title("Gestione Impianti HVAC - Castel Romano (Registro Ufficiale 2026)")
+# ---------------------------------------------------------
+# 1. DASHBOARD OPERATORI
+# ---------------------------------------------------------
+if menu == "Dashboard Operatori":
+    st.title("Dashboard Manutenzione & Stato Impianti")
+    st.markdown("Panoramica operativa delle macchine HVAC per zona e operatore di riferimento.")
 
-  conn = sqlite3.connect(DB_PATH, timeout=10.0)
-  df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
-  conn.close()
-
-  modo_vista = st.radio(
-      "Seleziona modalità di navigazione:",
-      [
-          "Filtro Rapido per Stato / Scadenza",
-          "Ricerca per Negozio / Unità",
-          "Tutti gli Impianti",
-      ],
-      horizontal=True,
-  )
-
-  unita_filtrate = pd.DataFrame()
-
-  if modo_vista == "Filtro Rapido per Stato / Scadenza":
-    scelta_stato = st.selectbox(
-        "Filtra per Stato Impianto:",
-        ["Tutti", "🟢 Regolari", "🟡 In Scadenza (30 gg)", "🔴 Scaduti"],
-    )
-
-    temp_list = []
-    for idx, row in df_impianti.iterrows():
-      scad_str = str(row["data_scadenza_dt"])
-      try:
-        dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
-        delta = (dt_scad - oggi).days
-      except:
-        delta = 9999
-
-      if delta < 0:
-        stato = "🔴 Scaduti"
-      elif delta <= 30:
-        stato = "🟡 In Scadenza (30 gg)"
-      else:
-        stato = "🟢 Regolari"
-
-      if scelta_stato == "Tutti" or scelta_stato == stato:
-        temp_list.append(row)
-
-    if temp_list:
-      unita_filtrate = pd.DataFrame(temp_list)
-    else:
-      unita_filtrate = pd.DataFrame(columns=df_impianti.columns)
-
-    st.info(
-        f"Trovate **{len(unita_filtrate)} unità HVAC** per lo stato"
-        f" `{scelta_stato}`"
-    )
-
-  elif modo_vista == "Ricerca per Negozio / Unità":
-    search_query = (
-        st.text_input(
-            "Inserisci nome negozio, numero unità, marca o targa:", ""
-        )
-        .strip()
-        .lower()
-    )
-    if search_query:
-      unita_filtrate = df_impianti[
-          df_impianti["ubicazione_negozio"]
-          .astype(str)
-          .str.lower()
-          .str.contains(search_query)
-          | df_impianti["nr_unita"]
-          .astype(str)
-          .str.lower()
-          .str.contains(search_query)
-          | df_impianti["marca"]
-          .astype(str)
-          .str.lower()
-          .str.contains(search_query)
-          | df_impianti["modello_matricola"]
-          .astype(str)
-          .str.lower()
-          .str.contains(search_query)
-          | df_impianti["codice_targa"]
-          .astype(str)
-          .str.lower()
-          .str.contains(search_query)
-      ]
-      st.subheader(
-          f"Risultati della ricerca per '{search_query}': ({len(unita_filtrate)}"
-          " macchine trovate)"
-      )
-    else:
-      unita_filtrate = df_impianti.copy()
-  else:
-    unita_filtrate = df_impianti.copy()
-
-  st.markdown("---")
-
-  for idx, row in unita_filtrate.iterrows():
-    matricola_str = str(row["modello_matricola"]).strip()
-    key_id = str(row["id_macchina"]).replace(" ", "_").replace("/", "_")
-
-    scad_str = str(row["data_scadenza_dt"])
-    try:
-      dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
-      delta = (dt_scad - oggi).days
-    except:
-      delta = 9999
-
-    if delta < 0:
-      stato_pallino = "🔴"
-      stato_txt = "SCADUTO"
-    elif delta <= 30:
-      stato_pallino = "🟡"
-      stato_txt = "IN SCADENZA"
-    else:
-      stato_pallino = "🟢"
-      stato_txt = "REGOLARE"
-
-    with st.expander(
-        f"{stato_pallino} Impianto {row['nr_unita']} - {row['marca']} (Targa:"
-        f" {row['codice_targa']}) [{stato_txt}]"
-    ):
-      c1, c2, c3 = st.columns(3)
-      with c1:
-        st.markdown("**Dati Tecnici**")
-        st.write(f"- Descrizione / Unità: `{row['nr_unita']}`")
-        st.write(f"- Modello / Matricola: `{matricola_str}`")
-        st.write(f"- CO2 Eq: `{row['tonn_co2_eq']} tCO2e`")
-      with c2:
-        st.markdown("**Refrigerante & Targa**")
-        st.write(f"- Gas: `{row['refrigerante']}`")
-        st.write(f"- Cod. Targa: `{row['codice_targa']}`")
-        st.write(f"- Carica stimata: `{row['carica_kg']:.2f} kg`")
-      with c3:
-        st.markdown("**Verifiche**")
-        st.write(f"- Ultima Verifica: `{row['ultima_verifica']}`")
-        st.write(f"- Scadenza Attuale: `{row['scadenza_verifica']}`")
-
-      st.markdown("---")
-      tab_fgas, tab_filtri = st.tabs([
-          "1. Compila & Rinnova F-GAS",
-          "2. Rapportino Manutenzione Filtri",
-      ])
-
-      with tab_fgas:
-        with st.form(key=f"form_fgas_{key_id}"):
-          st.markdown("##### Controllo Periodico F-GAS e Rinnovo Annuale")
-
-          # Data intervento di default (data corrente)
-          data_intervento_default = oggi.strftime("%d/%m/%Y")
-
-          # Calcola la nuova scadenza mantenendo GIORNO e MESE della vecchia scadenza e aggiornando all'ANNO CORRENTE
-          scad_precedente = str(row["scadenza_verifica"]).strip()
-          try:
-            dt_vecchia_scad = datetime.strptime(scad_precedente, "%d/%m/%Y")
-            # Sostituisce l'anno con l'anno corrente mantenendo giorno e mese originari
-            dt_nuova_scad = dt_vecchia_scad.replace(year=oggi.year)
-            if dt_nuova_scad < oggi:
-              dt_nuova_scad = dt_nuova_scad.replace(year=oggi.year + 1)
-          except:
-            dt_nuova_scad = oggi + timedelta(days=365)
-
-          nuova_scad_default = dt_nuova_scad.strftime("%d/%m/%Y")
-
-          col_d1, col_d2 = st.columns(2)
-          with col_d1:
-            data_intervento_input = st.text_input(
-                "Data Intervento (Modificabile Manualmente)",
-                value=data_intervento_default,
-                key=f"dt_int_{key_id}",
-            )
-          with col_d2:
-            nuova_scadenza_input = st.text_input(
-                "Nuova Scadenza Impianto (Anno Corrente + Mantenimento Giorno/Mese)",
-                value=nuova_scad_default,
-                key=f"dt_scad_{key_id}",
-            )
-
-          esito_circ1 = st.selectbox(
-              "Esito Circuito 1",
-              ["Assenza Perdite", "Rilevata Perdita"],
-              key=f"es1_{key_id}",
-          )
-          note_fgas = st.text_input(
-              "Note Tecniche / Causa ed Azioni",
-              "Controllo periodico eseguito con esito regolare. Impianto"
-              " rinnovato.",
-              key=f"note_f_{key_id}",
-          )
-
-          btn_fgas = st.form_submit_button(
-              "Genera Certificato Word e Aggiorna Scadenza"
-          )
-          if btn_fgas:
-            if os.path.exists(TEMPLATE_FGAS_PATH):
-              doc = Document(TEMPLATE_FGAS_PATH)
-              mappa_dati = {
-                  "{{UNITA}}": str(row["nr_unita"]),
-                  "{{MARCA}}": str(row["marca"]),
-                  "{{MODELLO}}": str(row["modello_matricola"]),
-                  "{{MATRICOLA}}": matricola_str,
-                  "{{TIPO_GAS}}": str(row["refrigerante"]),
-                  "{{CARICA_KG}}": f"{row['carica_kg']:.2f} kg",
-                  "{{CO2_EQ}}": f"{row['tonn_co2_eq']} tCO2e",
-                  "{{COD_APP}}": str(row["codice_targa"]),
-                  "{{DATA_INTERVENTO}}": data_intervento_input,
-                  "{{SCADENZA_VERIFICA}}": nuova_scadenza_input,
-                  "{{ESITO_CIRC1}}": esito_circ1.upper(),
-                  "{{NOTE_FGAS}}": note_fgas,
-              }
-              sostituisci_testo_docx(doc, mappa_dati)
-              filename_fgas = (
-                  f"Report_FGAS_{row['marca']}_{matricola_str.replace('/', '_').replace(' ', '_')}.docx"
-              )
-              doc.save(filename_fgas)
-
-              # Aggiorna il database con la data intervento e la nuova scadenza
-              aggiorna_scadenza_db(
-                  row["id_macchina"],
-                  data_intervento_input,
-                  nuova_scadenza_input,
-              )
-
-              st.session_state[f"dl_fgas_{key_id}"] = filename_fgas
-              st.success(
-                  f"Certificato generato con intervento in data"
-                  f" {data_intervento_input} e nuova scadenza al"
-                  f" {nuova_scadenza_input}!"
-              )
-              st.rerun()
-            else:
-              st.error(
-                  f"File modello '{TEMPLATE_FGAS_PATH}' non trovato nella"
-                  " directory."
-              )
-
-        if st.session_state.get(f"dl_fgas_{key_id}"):
-          f_path = st.session_state[f"dl_fgas_{key_id}"]
-          if os.path.exists(f_path):
-            with open(f_path, "rb") as f_in:
-              st.download_button(
-                  label="Scarica Certificato F-GAS Aggiornato (.docx)",
-                  data=f_in,
-                  file_name=f_path,
-                  mime=(
-                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  ),
-                  key=f"dl_btn_f_{key_id}",
-              )
-
-      with tab_filtri:
-        with st.form(key=f"form_filt_{key_id}"):
-          st.markdown("##### Rapportino Intervento Filtri & Pulizia")
-          azione_f = st.selectbox(
-              "Azione Eseguita",
-              [
-                  "Pulizia / Spolveratura Filtri",
-                  "Lavaggio Filtri & Sanificazione Vasca",
-                  "Sostituzione Filtri Nuovi",
-              ],
-              key=f"az_{key_id}",
-          )
-          stato_f = st.selectbox(
-              "Stato Post-Intervento",
-              ["Pulito / Ottimale", "Buono", "Da Sostituire"],
-              key=f"st_{key_id}",
-          )
-          note_f = st.text_input(
-              "Note Tecniche",
-              "Eseguita pulizia filtri e controllo flusso d'aria.",
-              key=f"nt_{key_id}",
-          )
-
-          btn_filt = st.form_submit_button("Genera Rapportino Filtri Word")
-          if btn_filt:
-            doc_f = Document()
-            doc_f.add_heading(
-                "RAPPORTINO MANUTENZIONE FILTRI & INTERVENTO ORDINARIO", level=1
-            )
-            doc_f.add_paragraph(
-                "Sito: McArthurGlen Designer Outlet Castel Romano - Data:"
-                f" {datetime.now().strftime('%d/%m/%Y %H:%M')}\nImpianto:"
-                f" {row['nr_unita']}"
-            )
-            doc_f.add_paragraph(
-                f"DETTAGLI APPARECCHIATURA:\nMarca/Modello: {row['marca']}"
-                f" {row['modello_matricola']} | Targa: {row['codice_targa']}"
-            )
-            doc_f.add_paragraph(
-                f"INTERVENTO:\nAzione: {azione_f} | Stato:"
-                f" {stato_f.upper()}\nNote: {note_f}"
-            )
-            doc_f.add_paragraph(
-                "TECNICO ESECUTORE:\nCBRE GWS Technical Division - ANTONIO"
-                " MARTINEZ (Cert. PR-0148807)"
-            )
-
-            filename_filt = (
-                f"Rapportino_Filtri_{row['nr_unita'].replace(' ', '_')}.docx"
-            )
-            doc_f.save(filename_filt)
-            st.session_state[f"dl_filt_{key_id}"] = filename_filt
-            st.success("Rapportino filtri generato con successo!")
-            st.rerun()
-
-        if st.session_state.get(f"dl_filt_{key_id}"):
-          f_path_filt = st.session_state[f"dl_filt_{key_id}"]
-          if os.path.exists(f_path_filt):
-            with open(f_path_filt, "rb") as f_in_f:
-              st.download_button(
-                  label="Scarica Rapportino Word Filtri",
-                  data=f_in_f,
-                  file_name=f_path_filt,
-                  mime=(
-                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  ),
-                  key=f"dl_btn_filt_{key_id}",
-              )
-
-elif menu == "Manutenzione Preventiva & F-GAS":
-  st.title("Checklist Preventiva e Scadenze F-GAS 2026")
-  st.markdown(
-      "Panoramica completa di tutte le apparecchiature F-GAS attive con"
-      " scadenze aggiornate e tonnellate CO2 eq."
-  )
-
-  conn = sqlite3.connect(DB_PATH, timeout=10.0)
-  df_prev = pd.read_sql(
-      "SELECT nr_unita, marca, modello_matricola, refrigerante, codice_targa,"
-      " ultima_verifica, scadenza_verifica, tonn_co2_eq, carica_kg FROM"
-      " macchine_hvac",
-      conn,
-  )
-  conn.close()
-
-  st.dataframe(df_prev, use_container_width=True, hide_index=True)
-
-  excel_scadenze = "Scadenze_F_GAS_2026.xlsx"
-  df_prev.to_excel(excel_scadenze, index=False)
-  with open(excel_scadenze, "rb") as f_scad:
-    st.download_button(
-        label="Scarica Tabella Scadenze F-GAS in formato Excel",
-        data=f_scad,
-        file_name=excel_scadenze,
-        mime=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
-        key="dl_scad_fgas",
-    )
-
-elif menu == "ODL Correttiva / A Chiamata":
-  st.title("Gestione ODL Correttivi / Extra a Chiamata")
-  st.markdown("Inserimento e verifica degli interventi straordinari.")
-
-  tab1, tab2 = st.tabs(["Nuovo ODL / Inoltro", "Archivio ODL a Chiamata"])
-
-  with tab1:
-    with st.form("form_odl_chiamata"):
-      st.subheader("Registrazione / Chiusura ODL Straordinario")
-      c_odl = st.text_input("Codice ODL", value="C63380570")
-      richiedente = st.text_input("Richiedente", value="Security Castel Romano")
-      descrizione = st.text_area(
-          "Descrizione Lavoro",
-          value=(
-              "Intervento di regolazione e manutenzione straordinaria impianti"
-          ),
-      )
-      data_limite = st.text_input(
-          "Data e Ora Riferimento",
-          value=datetime.now().strftime("%d/%m/%Y %H:%M"),
-      )
-
-      st.markdown("---")
-      ora_inizio = st.text_input("Ora Inizio", value="19:00")
-      ora_fine = st.text_input("Ora Fine", value="19:30")
-      esito = st.selectbox("Intervento Completato", ["SI", "NO"])
-      note_odl = st.text_area("Note dell'Intervento / Ricambi Utilizzati")
-
-      salva_odl = st.form_submit_button("Registra e Chiudi ODL")
-      if salva_odl:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-                    INSERT INTO odl_chiamata (codice_odl, richiedente, descrizione, data_limite, ora_inizio, ora_fine, esito, note, stato)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-            (
-                c_odl,
-                richiedente,
-                descrizione,
-                data_limite,
-                ora_inizio,
-                ora_fine,
-                esito,
-                note_odl,
-                "Completato",
-            ),
-        )
-        conn.commit()
-        conn.close()
-        st.success(f"ODL {c_odl} registrato e archiviato con successo!")
-
-  with tab2:
-    st.subheader("Storico ODL Registrati")
-    conn = sqlite3.connect(DB_PATH)
-    df_odl = pd.read_sql("SELECT * FROM odl_chiamata", conn)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
     conn.close()
 
-    if not df_odl.empty:
-      st.dataframe(df_odl, use_container_width=True)
-
-      excel_filename = "Archivio_ODL_Castel_Romano.xlsx"
-      df_odl.to_excel(excel_filename, index=False)
-
-      with open(excel_filename, "rb") as f_excel:
-        st.download_button(
-            label="Scarica Archivio ODL in formato Excel",
-            data=f_excel,
-            file_name=excel_filename,
-            mime=(
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            ),
-            key="btn_dl_archivio_odl",
-        )
+    op_scelto = st.radio(
+        "Filtra Impianti per Operatore:",
+        ["🟢 Pino", "🟡 Gianluca", "🔵 Johann", "🟣 Antonio", "Tutti"],
+        horizontal=True
+    )
+    
+    mapping_nomi = {"🟢 Pino": "Pino", "🟡 Gianluca": "Gianluca", "🔵 Johann": "Johann", "🟣 Antonio": "Antonio"}
+    
+    if op_scelto != "Tutti":
+        nome_sel = mapping_nomi[op_scelto]
+        df_op = df_impianti[df_impianti["operatore_assegnato"].str.lower() == nome_sel.lower()]
     else:
-      st.info("Nessun ODL a chiamata registrato nel database locale.")
+        df_op = df_impianti.copy()
 
-elif menu == "Profilo & F-GAS":
-  st.title("Certificato e Profilo Tecnico")
-  st.markdown(
-      "Dettagli ufficiali dell'abilitazione registrata per operare sugli"
-      " impianti del centro."
-  )
+    st.subheader(f"Unità Mappate ({len(df_op)} macchine)")
 
-  st.success("Tecnico: Sandor Antonio Leon Martinez")
-  st.write("**Codice Fiscale:** LNMSDR79801Z504U")
-  st.write("**Ente Certificatore:** IMQ S.p.A. (Accredia)")
-  st.write("**N. Iscrizione Registro F-GAS:** PR0148807")
-  st.write("**N. Certificato:** 2067P-1912001 (Scadenza: 03/12/2029)")
-  st.write("**Categoria:** Categoria I (Senza limiti di carica frigorifera)")
+    for idx, row in df_op.iterrows():
+        key_id = str(row["id_macchina"]).replace(" ", "_").replace("/", "_")
+        scad_str = str(row["data_scadenza_dt"])
+        try:
+            dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
+            delta = (dt_scad - oggi).days
+        except:
+            delta = 9999
+
+        pallino = "🔴" if delta < 0 else ("🟡" if delta <= 30 else "🟢")
+
+        with st.expander(f"{pallino} Unità {row['nr_unita']} - {row['marca']} ({row['ubicazione_negozio']})"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown("**Dati Impianto**")
+                st.write(f"- **Modello/Matricola:** `{row['modello_matricola']}`")
+                st.write(f"- **Targa:** `{row['codice_targa']}`")
+            with c2:
+                st.markdown("**Refrigerante**")
+                st.write(f"- **Tipo Gas:** `{row['refrigerante']}`")
+                st.write(f"- **Carica:** `{row['carica_kg']:.2f} kg` ({row['tonn_co2_eq']} tCO2e)")
+            with c3:
+                st.markdown("**Stato Controllo**")
+                st.write(f"- **Ultima Verifica:** `{row['ultima_verifica']}`")
+                st.write(f"- **Scadenza:** `{row['scadenza_verifica']}`")
+
+# ---------------------------------------------------------
+# 2. RICERCA & PLANIMETRIA (CHECKLIST MANUTENZIONE & FILTRI)
+# ---------------------------------------------------------
+elif menu == "Ricerca & Planimetria Impianti":
+    st.title("Gestione Impianti HVAC & Checklist Operative")
+
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    df_impianti = pd.read_sql("SELECT * FROM macchine_hvac", conn)
+    conn.close()
+
+    search_query = st.text_input("Cerca per unità, negozio, marca o targa:", "").strip().lower()
+    if search_query:
+        unita_filtrate = df_impianti[
+            df_impianti["ubicazione_negozio"].astype(str).str.lower().str.contains(search_query) |
+            df_impianti["nr_unita"].astype(str).str.lower().str.contains(search_query) |
+            df_impianti["marca"].astype(str).str.lower().str.contains(search_query) |
+            df_impianti["codice_targa"].astype(str).str.lower().str.contains(search_query)
+        ]
+    else:
+        unita_filtrate = df_impianti.copy()
+
+    for idx, row in unita_filtrate.iterrows():
+        key_id = str(row["id_macchina"]).replace(" ", "_").replace("/", "_")
+        scad_str = str(row["data_scadenza_dt"])
+        try:
+            dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
+            delta = (dt_scad - me).days
+        except:
+            delta = 9999
+
+        pallino = "🔴" if delta < 0 else ("🟡" if delta <= 30 else "🟢")
+
+        with st.expander(f"{pallino} Unità {row['nr_unita']} - {row['marca']} (Targa: {row['codice_targa']})"):
+            tab_manutenzione, tab_fgas_admin = st.tabs(["📋 Checklist & Filtri (Operativo)", "🔒 Controllo F-GAS (Riservato)"])
+
+            with tab_manutenzione:
+                db_dim_filtro = str(row.get("filtro_dimensioni", "") or "")
+                db_qta_filtro = int(row.get("filtro_quantita", 1) if pd.notna(row.get("filtro_quantita", 1)) else 1)
+
+                with st.form(key=f"form_manut_{key_id}"):
+                    st.markdown("##### Checklist Manutenzione Ordinaria & Specifiche Filtri")
+                    
+                    c_f1, c_f2 = st.columns(2)
+                    with c_f1:
+                        dim_in = st.text_input("Dimensioni Filtri (es. 500x500x48 mm)", value=db_dim_filtro, key=f"dim_{key_id}")
+                    with c_f2:
+                        qta_in = st.number_input("Quantità Filtri", min_value=1, max_value=20, value=db_qta_filtro, key=f"qta_{key_id}")
+
+                    st.markdown("**Controlli Operativi Eseguiti:**")
+                    chk_visivo = st.checkbox("Controllo visivo generale e fissaggi", value=True, key=f"chk1_{key_id}")
+                    chk_filtri = st.checkbox("Pulizia / Sostituzione filtri aria", value=True, key=f"chk2_{key_id}")
+                    chk_batterie = st.checkbox("Pulizia batteria di condensazione / espansione", value=True, key=f"chk3_{key_id}")
+                    chk_comandi = st.checkbox("Verifica principali organi di controllo e comando", value=True, key=f"chk4_{key_id}")
+                    chk_condensa = st.checkbox("Verifica e pulizia scarico condensa", value=True, key=f"chk5_{key_id}")
+
+                    note_manut = st.text_input("Note Intervento", "Manutenzione ordinaria e controllo eseguiti regolarmente.", key=f"nt_man_{key_id}")
+
+                    btn_salva = st.form_submit_button("Salva Aggiornamenti & Genera Rapportino Word")
+                    if btn_salva:
+                        # Update SQLite per preservare dimensioni e quantità filtri in loco
+                        conn_u = sqlite3.connect(DB_PATH, timeout=10.0)
+                        cur_u = conn_u.cursor()
+                        cur_u.execute("UPDATE macchine_hvac SET filtro_dimensioni = ?, filtro_quantita = ? WHERE id_macchina = ?", (dim_in, qta_in, row["id_macchina"]))
+                        conn_u.commit()
+                        conn_u.close()
+
+                        # Documento Word
+                        doc_f = Document()
+                        doc_f.add_heading("RAPPORTINO MANUTENZIONE ORDINARIA & FILTRI", level=1)
+                        doc_f.add_paragraph(f"Sito: McArthurGlen Designer Outlet Castel Romano\nData: {datetime.now().strftime('%d/%m/%Y %H:%M')}\nImpianto: {row['nr_unita']}")
+                        doc_f.add_paragraph(f"Dettagli: Marca/Modello: {row['marca']} {row['modello_matricola']} | Targa: {row['codice_targa']}")
+                        doc_f.add_paragraph(f"Specifiche Filtri: {dim_in} | Quantità: {qta_in} pz")
+                        doc_f.add_paragraph(f"Esito Controlli:\n- Controllo Visivo: {'OK' if chk_visivo else 'NO'}\n- Pulizia Filtri: {'OK' if chk_filtri else 'NO'}\n- Batteria Condensazione: {'OK' if chk_batterie else 'NO'}\n- Organi Comando: {'OK' if chk_comandi else 'NO'}\n- Scarico Condensa: {'OK' if chk_condensa else 'NO'}")
+                        doc_f.add_paragraph(f"Note Tecniche: {note_manut}")
+                        doc_f.add_paragraph(f"Tecnico Esecutore: {st.session_state.get('operatore_corrente', 'CBRE Technician')}")
+
+                        filename_filt = f"Rapportino_Ordinario_{str(row['nr_unita']).replace(' ', '_')}.docx"
+                        doc_f.save(filename_filt)
+                        st.session_state[f"dl_filt_{key_id}"] = filename_filt
+                        st.success("Dati e specifiche filtri aggiornati nel database con successo!")
+                        st.rerun()
+
+                if st.session_state.get(f"dl_filt_{key_id}"):
+                    f_path_filt = st.session_state[f"dl_filt_{key_id}"]
+                    if os.path.exists(f_path_filt):
+                        with open(f_path_filt, "rb") as f_in_f:
+                            st.download_button(
+                                label=" Scarica Rapportino Manutenzione Word",
+                                data=f_in_f,
+                                file_name=f_path_filt,
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key=f"dl_btn_m_{key_id}",
+                            )
+
+            with tab_fgas_admin:
+                if not st.session_state["autorizzato_fgas"]:
+                    st.warning("⚠️ Accesso Riservato. Moduli F-GAS modificabili solo da Antonio (ID 3177).")
+                else:
+                    with st.form(key=f"form_fgas_{key_id}"):
+                        st.markdown("##### Controllo Periodico F-GAS e Rinnovo Registro Ufficiale")
+                        data_int = st.text_input("Data Intervento", value=oggi.strftime("%d/%m/%Y"), key=f"dt_fgas_{key_id}")
+                        nuova_scad = st.text_input("Nuova Scadenza (1 Anno)", value=(oggi + timedelta(days=365)).strftime("%d/%m/%Y"), key=f"scad_fgas_{key_id}")
+                        esito_fgas = st.selectbox("Esito Controllo Perdite", ["Assenza Perdite", "Rilevata Perdita"], key=f"es_fgas_{key_id}")
+                        note_fgas = st.text_input("Note Certificato", "Verifica uscite e tenuta gas eseguita con esito regolare.", key=f"nt_fgas_{key_id}")
+
+                        btn_fgas = st.form_submit_button("Emetti Certificato F-GAS e Aggiorna Registro")
+                        if btn_fgas:
+                            if os.path.exists(TEMPLATE_FGAS_PATH):
+                                doc = Document(TEMPLATE_FGAS_PATH)
+                                me_data = {
+                                    "{{UNITA}}": str(row["nr_unita"]),
+                                    "{{MARCA}}": str(row["marca"]),
+                                    "{{MODELLO}}": str(row["modello_matricola"]),
+                                    "{{MATRICOLA}}": str(row["modello_matricola"]),
+                                    "{{TIPO_GAS}}": str(row["refrigerante"]),
+                                    "{{CARICA_KG}}": f"{row['carica_kg']:.2f} kg",
+                                    "{{CO2_EQ}}": f"{row['tonn_co2_eq']} tCO2e",
+                                    "{{COD_APP}}": str(row["codice_targa"]),
+                                    "{{DATA_INTERVENTO}}": data_int,
+                                    "{{SCADENZA_VERIFICA}}": nuova_scad,
+                                    "{{ESITO_CIRC1}}": esito_fgas.upper(),
+                                    "{{NOTE_FGAS}}": note_fgas,
+                                }
+                                sostituisci_testo_docx(doc, me_data)
+                                filename_fgas = f"Report_FGAS_{row['marca']}_{key_id}.docx"
+                                doc.save(filename_fgas)
+
+                                aggiorna_scadenza_db(row["id_macchina"], data_int, nuova_scad)
+                                st.session_state[f"dl_fgas_{key_id}"] = filename_fgas
+                                st.success("Certificato F-GAS emesso e registro aggiornato!")
+                                st.rerun()
+                            else:
+                                st.error(f"Modello '{TEMPLATE_FGAS_PATH}' non reperito nel sistema.")
+
+                    if st.session_state.get(f"dl_fgas_{key_id}"):
+                        f_path = st.session_state[f"dl_fgas_{key_id}"]
+                        if os.path.exists(f_path):
+                            with open(f_path, "rb") as f_in:
+                                st.download_button(
+                                    label=" Scarica Certificato F-GAS (.docx)",
+                                    data=f_in,
+                                    file_name=f_path,
+                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    key=f"dl_btn_fgas_{key_id}",
+                                )
+
+# ---------------------------------------------------------
+# 3. REGISTRO F-GAS (SOLO ADMIN ANTONIO)
+# ---------------------------------------------------------
+elif menu == "Registro F-GAS & Scadenze (Riservato)":
+    st.title("Registro Ufficiale Apparecchiature F-GAS 2026")
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    df_prev = pd.read_sql("SELECT nr_unita, marca, modello_matricola, refrigerante, codice_targa, ultima_verifica, scadenza_verifica, tonn_co2_eq, carica_kg, operatore_assegnato FROM macchine_hvac", conn)
+    conn.close()
+
+    st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+    excel_scadenze = f"Registro_Master_FGAS_CastelRomano_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    df_prev.to_excel(excel_scadenze, index=False)
+    with open(excel_scadenze, "rb") as f_scad:
+        st.download_button(
+            label=" Scarica Registro Master F-GAS in Excel",
+            data=f_scad,
+            file_name=excel_scadenze,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_scad_fgas_admin",
+        )
+
+# ---------------------------------------------------------
+# 4. ODL CORRETTIVA & ARCHIVIO RETENTION 2+ ANNI
+# ---------------------------------------------------------
+elif menu == "ODL Correttiva / Extra":
+    st.title("Gestione ODL Correttivi & Archivio (Retention 2+ Anni)")
+
+    tab1, tab2 = st.tabs(["Chiusura Nuovo ODL", " Archivio ODL Eseguiti (Download Excel)"])
+
+    with tab1:
+        with st.form("form_odl_chiamata"):
+            st.subheader("Registrazione / Chiusura Intervento Straordinario")
+            c_odl = st.text_input("Codice ODL", value="C63380570")
+            richiedente = st.text_input("Richiedente", value="Security Castel Romano")
+            descrizione = st.text_area("Descrizione Intervento", value="Manutenzione straordinaria su chiamata")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                ora_inizio = st.text_input("Ora Inizio", value="19:00")
+            with c2:
+                ora_fine = st.text_input("Ora Fine", value="19:30")
+                
+            esito = st.selectbox("Intervento Riconosciuto / Completato", ["SI", "NO"])
+            note_odl = st.text_area("Note Tecniche / Ricambi Impiegati")
+
+            salva_odl = st.form_submit_button("Registra e Archivia ODL")
+            if salva_odl:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                dt_reg = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                esecutore = st.session_state.get("operatore_corrente", "Operatore CBRE")
+                cursor.execute("""
+                    INSERT INTO odl_chiamata (codice_odl, richiedente, descrizione, data_registro, ora_inizio, ora_fine, esito, note, stato, operatore_esecutore)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (c_odl, richiedente, descrizione, dt_reg, ora_inizio, ora_fine, esito, note_odl, "Completato", esecutore))
+                conn.commit()
+                conn.close()
+                st.success(f"ODL {c_odl} inserito con successo nell'archivio storico!")
+
+    with tab2:
+        st.subheader("Archivio Storico ODL Eseguiti (Storage Legal Compliance > 2 Anni)")
+        conn = sqlite3.connect(DB_PATH)
+        df_odl = pd.read_sql("SELECT * FROM odl_chiamata ORDER BY id DESC", conn)
+        conn.close()
+
+        if not df_odl.empty:
+            st.dataframe(df_odl, use_container_width=True)
+
+            excel_filename = f"Archivio_ODL_Castel_Romano_2Anni_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            df_odl.to_excel(excel_filename, index=False)
+
+            with open(excel_filename, "rb") as f_excel:
+                st.download_button(
+                    label=" Scarica Storico Completo ODL (Excel)",
+                    data=f_excel,
+                    file_name=excel_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="btn_dl_archivio_odl_full"
+                )
+        else:
+            st.info("Nessun ODL straordinario attualmente registrato nell'archivio locale.")
+
+# ---------------------------------------------------------
+# 5. PROFILO ANTONIO (SOLO ADMIN)
+# ---------------------------------------------------------
+elif menu == "Profilo & Abilitazioni F-GAS":
+    st.title("Profilo Tecnico Amministratore")
+    st.success("Tecnico Responsabile: Sandor Antonio Leon Martinez")
+    st.write("**Codice Fiscale:** LNMSDR79801Z504U")
+    st.write("**Organismo di Certificazione:** IMQ S.p.A. (Accredia)")
+    st.write("**Numero Iscrizione Registro F-GAS:** PR0148807")
+    st.write("**Certificato N.:** 2067P-1912001 (Scadenza: 03/12/2029)")
+    st.write("**Categoria:** Categoria I (Senza limiti di carica frigorifera)")
