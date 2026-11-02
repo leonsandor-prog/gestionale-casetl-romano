@@ -57,7 +57,7 @@ def init_db_mappa():
             )
         """)
 
-        # Inizializzazione dati da Excel solo se il DB è vuoto per preservare le modifiche in loco
+        # Inizializzazione dati da Excel solo se il DB è vuoto
         cursor.execute("SELECT COUNT(*) FROM macchine_hvac")
         if cursor.fetchone()[0] == 0 and os.path.exists(EXCEL_PATH):
             df_excel = pd.read_excel(EXCEL_PATH, sheet_name="Master F-GAS 2026")
@@ -244,7 +244,7 @@ elif menu == "Ricerca & Planimetria Impianti":
         scad_str = str(row["data_scadenza_dt"])
         try:
             dt_scad = datetime.strptime(scad_str[:10], "%Y-%m-%d")
-            delta = (dt_scad - me).days
+            delta = (dt_scad - oggi).days
         except:
             delta = 9999
 
@@ -277,7 +277,7 @@ elif menu == "Ricerca & Planimetria Impianti":
 
                     btn_salva = st.form_submit_button("Salva Aggiornamenti & Genera Rapportino Word")
                     if btn_salva:
-                        # Update SQLite per preservare dimensioni e quantità filtri in loco
+                        # Update SQLite per preservare dimensioni e quantità filtri
                         conn_u = sqlite3.connect(DB_PATH, timeout=10.0)
                         cur_u = conn_u.cursor()
                         cur_u.execute("UPDATE macchine_hvac SET filtro_dimensioni = ?, filtro_quantita = ? WHERE id_macchina = ?", (dim_in, qta_in, row["id_macchina"]))
@@ -305,7 +305,7 @@ elif menu == "Ricerca & Planimetria Impianti":
                     if os.path.exists(f_path_filt):
                         with open(f_path_filt, "rb") as f_in_f:
                             st.download_button(
-                                label=" Scarica Rapportino Manutenzione Word",
+                                label="📥 Scarica Rapportino Manutenzione Word",
                                 data=f_in_f,
                                 file_name=f_path_filt,
                                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -357,7 +357,7 @@ elif menu == "Ricerca & Planimetria Impianti":
                         if os.path.exists(f_path):
                             with open(f_path, "rb") as f_in:
                                 st.download_button(
-                                    label=" Scarica Certificato F-GAS (.docx)",
+                                    label="📥 Scarica Certificato F-GAS (.docx)",
                                     data=f_in,
                                     file_name=f_path,
                                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -379,7 +379,7 @@ elif menu == "Registro F-GAS & Scadenze (Riservato)":
     df_prev.to_excel(excel_scadenze, index=False)
     with open(excel_scadenze, "rb") as f_scad:
         st.download_button(
-            label=" Scarica Registro Master F-GAS in Excel",
+            label="📊 Scarica Registro Master F-GAS in Excel",
             data=f_scad,
             file_name=excel_scadenze,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -392,7 +392,7 @@ elif menu == "Registro F-GAS & Scadenze (Riservato)":
 elif menu == "ODL Correttiva / Extra":
     st.title("Gestione ODL Correttivi & Archivio (Retention 2+ Anni)")
 
-    tab1, tab2 = st.tabs(["Chiusura Nuovo ODL", " Archivio ODL Eseguiti (Download Excel)"])
+    tab1, tab2 = st.tabs(["Chiusura Nuovo ODL", "📂 Archivio ODL Eseguiti (Download Excel)"])
 
     with tab1:
         with st.form("form_odl_chiamata"):
@@ -438,7 +438,7 @@ elif menu == "ODL Correttiva / Extra":
 
             with open(excel_filename, "rb") as f_excel:
                 st.download_button(
-                    label=" Scarica Storico Completo ODL (Excel)",
+                    label="📊 Scarica Storico Completo ODL (Excel)",
                     data=f_excel,
                     file_name=excel_filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
