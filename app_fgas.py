@@ -7,6 +7,47 @@ import io
 # Configurazione pagina per dispositivi mobili / desktop
 st.set_page_config(page_title="CBRE - Castel Romano HVAC", layout="centered")
 
+# --- INIZIALIZZAZIONE E CONNESSIONE DATABASE ---
+def get_db_connection():
+    conn = sqlite3.connect('castel_romano.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # Creazione tabella impianti se non esiste
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS impianti (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nr_unita TEXT,
+            marca TEXT,
+            modello TEXT,
+            codice_targa TEXT,
+            refrigerante TEXT,
+            co2_eq TEXT,
+            fgas_nr TEXT,
+            scadenza TEXT
+        )
+    ''')
+    
+    # Inserisce un paio di unità di prova se la tabella è vuota
+    cursor.execute("SELECT COUNT(*) FROM impianti")
+    if cursor.fetchone()[0] == 0:
+        unita_default = [
+            ("85", "Clivet", "Rooftop RTD", "CTR-85-A", "R410A", "11.55", "FG-2023-001", "15/12/2026"),
+            ("86", "Daikin", "VRV-S RXYSQ", "DK-86-B", "R32", "4.20", "FG-2023-002", "20/10/2026")
+        ]
+        cursor.executemany('''
+            INSER INTO impianti (nr_unita, marca, modello, codice_targa, refrigerante, co2_eq, fgas_nr, scadenza)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', unita_default)
+        conn.commit()
+    conn.close()
+
+# Eseguiamo l'inizializzazione al caricamento
+init_db()
+
 # --- AUTENTICAZIONE E PROFILO RAPIDO ---
 st.sidebar.title("Operatore")
 codice_inserito = st.sidebar.text_input("Inserisci Codice Operatore (es. 3177 per LUL)", type="password")
@@ -21,22 +62,13 @@ else:
 st.title("Operation Castel Romano 2026")
 st.markdown("Gestione rapida impianti HVAC e F-GAS sul campo.")
 
-# --- CONNESSIONE DATABASE ---
-def get_db_connection():
-    conn = sqlite3.connect('castel_romano.db')
-    conn.row_factory = sqlite3.Row
-    return conn
-
-conn = get_db_connection()
-cursor = conn.cursor()
-
 # Caricamento dati impianti
+conn = get_db_connection()
 try:
     df_impianti = pd.read_sql_query("SELECT * FROM impianti", conn)
 except Exception as e:
     st.error(f"Errore caricamento database: {e}")
     df_impianti = pd.DataFrame()
-
 conn.close()
 
 if not df_impianti.empty:
@@ -66,23 +98,22 @@ if not df_impianti.empty:
             with tab_op1:
                 st.markdown("### Controllo e Intervento F-GAS")
                 if is_autorizzato:
-                    tipo_intervento = st.selectbox("Tipo Intervento", ["Controllo Fughe", "Carica / Rabbocco", "Recupero", "Manutenzione Straordinaria"], key=f"int_{row['id'] if 'id' in row else index}")
-                    note_intervento = st.text_area("Note Operatore", key=f"note_{row['id'] if 'id' in row else index}")
-                    if st.button("Registra Intervento F-GAS", key=f"btn_fgas_{index}"):
+                    tipo_intervento = st.selectbox("Tipo Intervento", ["Controllo Fughe", "Carica / Rabbocco", "Recupero", "Manutenzione Straordinaria"], key=f"int_{row['id']}")
+                    note_intervento = st.text_area("Note Operatore", key=f"note_{row['id']}")
+                    if st.button("Registra Intervento F-GAS", key=f"btn_fgas_{row['id']}"):
                         st.success(f"Intervento registrato con successo per l'Unità {row.get('nr_unita', '')}!")
                 else:
                     st.warning("🔒 Inserisci il codice operatore autorizzato nella barra laterale per registrare variazioni F-GAS.")
                     
             with tab_op2:
                 st.markdown("### Manutenzione Preventiva / Filtri")
-                stato_filtri = st.selectbox("Stato Filtri", ["Puliti", "Da Sostituire", "Sostituiti"], key=f"filtri_{index}")
-                if st.button("Aggiorna Stato Filtri", key=f"btn_filtri_{index}"):
+                stato_filtri = st.selectbox("Stato Filtri", ["Puliti", "Da Sostituire", "Sostituiti"], key=f"filtri_{row['id']}")
+                if st.button("Aggiorna Stato Filtri", key=f"btn_filtri_{row['id']}"):
                     st.success("Stato manutenzione aggiornato.")
                     
             with tab_op3:
                 st.markdown("### Documentazione e ODL")
-                if st.button("Genera Report Word", key=f"btn_word_{index}"):
-                    # Generazione file Word al volo
+                if st.button("Genera Report Word", key=f"btn_word_{row['id']}"):
                     doc = docx.Document()
                     doc.add_heading(f'Rapporto Intervento - Unità {row.get("nr_unita", "")}', level=1)
                     doc.add_paragraph(f"Tecnico: Sandor Antonio León Martinez (Codice: {codice_inserito if is_autorizzato else 'Ospite'})")
@@ -98,7 +129,7 @@ if not df_impianti.empty:
                         data=buffer,
                         file_name=f"Report_Unita_{row.get('nr_unita', 'Dati')}.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        key=f"dl_{index}"
+                        key=f"dl_{row['id']}"
                     )
 else:
     st.warning("Nessun impianto trovato nel database.")
