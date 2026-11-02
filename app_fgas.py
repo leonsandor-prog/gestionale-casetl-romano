@@ -2,10 +2,12 @@ import sqlite3
 import os
 from datetime import datetime
 import pandas as pd
+from docx import Document
 import streamlit as st
 
 DB_PATH = "castel_romano.db"
 EXCEL_PATH = "F_GAS_Impianti_Attivi_2026_Assegnato.xlsx"
+TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
 
 def init_db_mappa():
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
@@ -56,7 +58,7 @@ def init_db_mappa():
             )
         """)
 
-        # Verifica se la tabella esistente ha le nuove colonne. In caso contrario, resetta la tabella per aggiornare la struttura dal nuovo Excel.
+        # Verifica se la tabella esistente ha le colonne aggiornate
         cursor.execute("PRAGMA table_info(macchine_hvac)")
         colonne_db = [col[1] for col in cursor.fetchall()]
         
@@ -87,7 +89,7 @@ def init_db_mappa():
                 )
             """)
 
-        # Popola/Ripopola se vuota
+        # Popolamento iniziale da Excel
         cursor.execute("SELECT COUNT(*) FROM macchine_hvac")
         if cursor.fetchone()[0] == 0 and os.path.exists(EXCEL_PATH):
             df_excel = pd.read_excel(EXCEL_PATH, sheet_name="Master F-GAS 2026")
@@ -130,7 +132,6 @@ init_db_mappa()
 
 st.set_page_config(page_title="Gestione F-GAS & Manutenzione Castel Romano", layout="wide")
 
-# Funzione ausiliaria per garantire la presenza delle colonne nel DataFrame
 def carica_dataframe_sicuro():
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     df = pd.read_sql("SELECT * FROM macchine_hvac", conn)
@@ -302,6 +303,27 @@ elif menu in ["Manutenzione Preventiva & Filtri", "Manutenzione Preventiva & F-G
     df_prev = carica_dataframe_sicuro()[["nr_unita", "marca", "operatore_assegnato", "refrigerante", "tonn_co2_eq", "zona_designata"]]
     st.dataframe(df_prev, use_container_width=True, hide_index=True)
 
+    if autorizzato_fgas:
+        st.markdown("---")
+        st.subheader("❄️ Generazione Certificato F-GAS Ufficiale (Word)")
+        if st.button("Genera Report F-GAS in Word"):
+            doc = Document()
+            doc.add_heading("CBRE GWS - Rapporto Intervento F-GAS", 0)
+            doc.add_paragraph(f"Tecnico: Sandor Antonio León Martínez (Cert. PR0148807)")
+            doc.add_paragraph(f"Data Emissione: {datetime.now().strftime('%d/%m/%Y')}")
+            doc.add_paragraph("Impianti verificati regolarmente ai sensi del DPR 146/2018.")
+            
+            output_docx = "Rapporto_FGAS_CastelRomano.docx"
+            doc.save(output_docx)
+            
+            with open(output_docx, "rb") as f_doc:
+                st.download_button(
+                    label="📥 Scarica Certificato F-GAS (Word)",
+                    data=f_doc,
+                    file_name=output_docx,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+
 elif menu == "ODL Correttiva / A Chiamata":
     st.title("Gestione ODL Correttivi & Archivio Storico (2+ Anni)")
 
@@ -364,3 +386,4 @@ elif menu == "Profilo & F-GAS":
     st.success("Tecnico Amministratore: Sandor Antonio León Martínez")
     st.write("**Codice LUL:** `3177`")
     st.write("**N. Iscrizione Registro F-GAS:** `PR0148807` (Cat. I)")
+    st.info("Accesso completo sbloccato per la gestione dei registri di impianto e conformità normativa.")
