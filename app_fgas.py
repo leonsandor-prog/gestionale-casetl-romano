@@ -3,12 +3,14 @@ import os
 from datetime import datetime, timedelta
 import pandas as pd
 from docx import Document
+from docx.shared import Inches
 import streamlit as st
 
 DB_PATH = "castel_romano.db"
 EXCEL_PATH = "F_GAS_Impianti_Attivi_2026_.xlsx"
 TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
 OUTPUT_DIR = "Report_FGAS_Generati_2026"
+FIRMA_PATH = "firma.jpg"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
@@ -35,7 +37,6 @@ def init_db():
         xls = pd.ExcelFile(EXCEL_PATH)
         df_excel = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
         
-        # Mappatura flessibile delle colonne del file Excel
         for _, row in df_excel.iterrows():
             collocazione = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
             nr_unita = str(row.get("Unità / Macchina", row.get("Unità", row.get("Descrizione", "")))).strip()
@@ -44,7 +45,7 @@ def init_db():
             matricola = str(row.get("Matricola", modello)).strip()
             refrigerante = str(row.get("Refrigerante", row.get("Tipo Gas", "R-410A"))).strip()
             tonn_co2 = float(row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0)) if pd.notna(row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0))) else 0.0)
-            carica_, carica_col = 0.0, row.get("Carica Refrigerante (kg)", row.get("Carica (kg)", 0.0))
+            carica_col = row.get("Carica Refrigerante (kg)", row.get("Carica (kg)", 0.0))
             carica_kg = float(carica_col) if pd.notna(carica_col) and carica_col != 0.0 else ((tonn_co2 * 1000.0) / 2088.0 if tonn_co2 > 0 else 0.0)
             codice_targa = str(row.get("Cod. Apparecchiatura", row.get("Codice Targa", ""))).strip()
             scadenza = str(row.get("Scadenza Verifica", "14/04/2027")).strip()
@@ -73,7 +74,7 @@ menu = st.sidebar.radio("Sezione:", ["Dashboard & Impianti", "Scan Targhetta (Fo
 oggi = datetime.now()
 
 if menu == "Dashboard & Impianti":
-    st.title("Gestione Registro & Rapportini F-GAS")
+    st.title("Gestione Registro & Rapportini F-GAS (Firmati)")
 
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     df_macchine = pd.read_sql("SELECT * FROM macchine_hvac", conn)
@@ -93,6 +94,7 @@ if menu == "Dashboard & Impianti":
     st.markdown(f"**Impianti visualizzati: {len(df_view)} / {len(df_macchine)}**")
 
     for _, row in df_view.iterrows():
+        key_id = str(row["id_macchina"]).replace(" ", "_").replace("/", "_")
         stato = row["stato_compilazione"]
         pallino = "🟢" if stato == "Completato" else "🟡"
 
@@ -110,20 +112,20 @@ if menu == "Dashboard & Impianti":
 
             st.divider()
 
-            with st.form(key=f"form_unita_{row['id_macchina']}"):
+            with st.form(key=f"form_unita_{key_id}"):
                 st.markdown("##### ✏️ Verifica e Modifica Dati (se difformi dal campo)")
                 nc1, nc2, nc3 = st.columns(3)
                 with nc1:
-                    mod_edit = st.text_input("Modello", value=row["modello"], key=f"mod_{row['id_macchina']}")
-                    gas_edit = st.selectbox("Refrigerante", ["R-410A", "R-407C", "R-32", "R-134a"], index=0 if row["refrigerante"]=="R-410A" else 1, key=f"gas_{row['id_macchina']}")
+                    mod_edit = st.text_input("Modello", value=row["modello"], key=f"mod_{key_id}")
+                    gas_edit = st.selectbox("Refrigerante", ["R-410A", "R-407C", "R-32", "R-134a"], index=0 if "410" in row["refrigerante"] else 1, key=f"gas_{key_id}")
                 with nc2:
-                    carica_edit = st.number_input("Carica (kg)", value=float(row["carica_kg"]), step=0.1, key=f"kg_{row['id_macchina']}")
-                    co2_edit = st.number_input("Tonn CO2 Eq", value=float(row["tonn_co2_eq"]), step=0.01, key=f"co2_{row['id_macchina']}")
+                    carica_edit = st.number_input("Carica (kg)", value=float(row["carica_kg"]), step=0.1, key=f"kg_{key_id}")
+                    co2_edit = st.number_input("Tonn CO2 Eq", value=float(row["tonn_co2_eq"]), step=0.01, key=f"co2_{key_id}")
                 with nc3:
-                    targa_edit = st.text_input("Codice Targa", value=row["codice_targa"], key=f"targa_{row['id_macchina']}")
-                    stato_edit = st.selectbox("Stato Lavorazione", ["Da Lavorare", "Completato"], index=0 if row["stato_compilazione"]=="Da Lavorare" else 1, key=f"st_{row['id_macchina']}")
+                    targa_edit = st.text_input("Codice Targa", value=row["codice_targa"], key=f"targa_{key_id}")
+                    stato_edit = st.selectbox("Stato Lavorazione", ["Da Lavorare", "Completato"], index=0 if row["stato_compilazione"]=="Da Lavorare" else 1, key=f"st_{key_id}")
 
-                btn_aggiorna = st.form_submit_button("💾 Salva Modifiche & Genera Rapportino F-GAS")
+                btn_aggiorna = st.form_submit_button("💾 Salva & Genera Rapportino F-GAS (Firmato)")
 
                 if btn_aggiorna:
                     conn_up = sqlite3.connect(DB_PATH)
@@ -152,6 +154,8 @@ if menu == "Dashboard & Impianti":
                             "{{SCADENZA_VERIFICA}}": str(row["scadenza_verifica"]),
                             "{{ESITO_CIRC1}}": "ASSENZA PERDITE"
                         }
+                        
+                        # Sostituzione testo
                         for p in doc.paragraphs:
                             for k, v in mappa.items():
                                 if k in p.text:
@@ -163,11 +167,41 @@ if menu == "Dashboard & Impianti":
                                         for k, v in mappa.items():
                                             if k in p.text:
                                                 p.text = p.text.replace(k, str(v))
-                        
+
+                        # Inserimento automatico dell'immagine della firma 'firma.jpg' nelle celle con "Firma"
+                        if os.path.exists(FIRMA_PATH):
+                            for table in doc.tables:
+                                for row_t in table.rows:
+                                    for cell in row_t.cells:
+                                        if "Firma" in cell.text:
+                                            # Rimuoviamo il testo "Firma" o aggiungiamo l'immagine sotto/al posto del testo
+                                            cell.text = "" # Pulisce la cella o mantiene lo spazio
+                                            p_firma = cell.paragraphs[0]
+                                            run = p_firma.add_run()
+                                            run.add_picture(FIRMA_PATH, width=Inches(1.2))
+
                         out_file = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{mod_edit}_Unita_{row['nr_unita']}.docx")
                         doc.save(out_file)
-                        st.success(f"Modifiche salvate e rapportino generato con successo in '{OUTPUT_DIR}'!")
+                        st.session_state[f"last_generated_{key_id}"] = out_file
+                        st.success("Modifiche salvate e rapportino firmato generato con successo!")
                         st.rerun()
+
+            # Pulsante di download diretto
+            last_file = st.session_state.get(f"last_generated_{key_id}")
+            if not last_file:
+                possible_path = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{row['modello']}_Unita_{row['nr_unita']}.docx")
+                if os.path.exists(possible_path):
+                    last_file = possible_path
+
+            if last_file and os.path.exists(last_file):
+                with open(last_file, "rb") as f_dl:
+                    st.download_button(
+                        label=f"📥 Scarica Rapportino F-GAS Firmato ({os.path.basename(last_file)})",
+                        data=f_dl,
+                        file_name=os.path.basename(last_file),
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"btn_dl_{key_id}"
+                    )
 
 elif menu == "Scan Targhetta (Foto/Camera)":
     st.title("Riconoscimento Impianto da Targhetta in Campo")
@@ -192,3 +226,4 @@ elif menu == "Scan Targhetta (Foto/Camera)":
                     st.write(f"**Unità {match['nr_unita']}** - Marca: {match['marca']} - Modello: {match['modello']} - Targa: `{match['codice_targa']}` - Stato: `{match['stato_compilazione']}`")
             else:
                 st.warning("Nessuna unità trovata con questo codice nel database master.")
+            
