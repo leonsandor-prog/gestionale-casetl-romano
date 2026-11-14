@@ -1,9 +1,10 @@
 import sqlite3
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 from docx import Document
 from docx.shared import Inches
+from PIL import Image
 import streamlit as st
 
 DB_PATH = "castel_romano.db"
@@ -74,36 +75,40 @@ menu = st.sidebar.radio("Sezione:", ["Dashboard & Impianti", "Scan Targhetta (Fo
 oggi = datetime.now()
 
 if menu == "Dashboard & Impianti":
-    st.title("Gestione Registro & Rapportini F-GAS (Firmati)")
+    st.title("Gestione Registro & Rapportini F-GAS")
 
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     df_macchine = pd.read_sql("SELECT * FROM macchine_hvac", conn)
     conn.close()
 
-    search = st.text_input("🔍 Cerca per Unità, Modello, Targa o Marca:", "").strip().lower()
+    # Barra di ricerca istantanea su tutti gli identificativi
+    search = st.text_input("🔍 Cerca per Unità, Matricola, Codice Apparecchiatura (Targa), Modello o Marca:", "").strip().lower()
     if search:
         df_view = df_macchine[
-            df_macchine["nr_unita"].str.lower().str.contains(search) |
-            df_macchine["modello"].str.lower().str.contains(search) |
-            df_macchine["codice_targa"].str.lower().str.contains(search) |
-            df_macchine["marca"].str.lower().str.contains(search)
+            df_macchine["nr_unita"].astype(str).str.lower().str.contains(search) |
+            df_macchine["matricola"].astype(str).str.lower().str.contains(search) |
+            df_macchine["codice_targa"].astype(str).str.lower().str.contains(search) |
+            df_macchine["modello"].astype(str).str.lower().str.contains(search) |
+            df_macchine["marca"].astype(str).str.lower().str.contains(search)
         ]
     else:
         df_view = df_macchine
 
-    st.markdown(f"**Impianti visualizzati: {len(df_view)} / {len(df_macchine)}**")
+    completati = len(df_macchine[df_macchine["stato_compilazione"] == "Completato"])
+    st.markdown(f"**Impianti visualizzati: {len(df_view)} / {len(df_macchine)}** — *Completati: {completati}*")
 
     for _, row in df_view.iterrows():
         key_id = str(row["id_macchina"]).replace(" ", "_").replace("/", "_")
         stato = row["stato_compilazione"]
         pallino = "🟢" if stato == "Completato" else "🟡"
 
-        with st.expander(f"{pallino} Unità {row['nr_unita']} - {row['marca']} {row['modello']} (Targa: `{row['codice_targa']}`) - Stato: {stato}"):
+        with st.expander(f"{pallino} Unità {row['nr_unita']} - {row['marca']} {row['modello']} | Targa: `{row['codice_targa']}` | Matr: `{row['matricola']}`"):
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown("**Dati Impianto & Targa**")
+                st.markdown("**Dati Impianto & Identificativi**")
                 st.write(f"- **Collocazione:** `{row['collocazione']}`")
                 st.write(f"- **Matricola:** `{row['matricola']}`")
+                st.write(f"- **Cod. Apparecchiatura:** `{row['codice_targa']}`")
             with c2:
                 st.markdown("**Parametri F-GAS**")
                 st.write(f"- **Refrigerante:** `{row['refrigerante']}`")
@@ -113,17 +118,21 @@ if menu == "Dashboard & Impianti":
             st.divider()
 
             with st.form(key=f"form_unita_{key_id}"):
-                st.markdown("##### ✏️ Verifica e Modifica Dati (se difformi dal campo)")
+                st.markdown("##### ✏️ Verifica e Modifica Dati in Campo")
                 nc1, nc2, nc3 = st.columns(3)
                 with nc1:
                     mod_edit = st.text_input("Modello", value=row["modello"], key=f"mod_{key_id}")
-                    gas_edit = st.selectbox("Refrigerante", ["R-410A", "R-407C", "R-32", "R-134a"], index=0 if "410" in row["refrigerante"] else 1, key=f"gas_{key_id}")
+                    matr_edit = st.text_input("Matricola", value=row["matricola"], key=f"matr_{key_id}")
                 with nc2:
+                    gas_lista = ["R-410A", "R-407C", "R-32", "R-134a"]
+                    idx_gas = gas_lista.index(row["refrigerante"]) if row["refrigerante"] in gas_lista else 0
+                    gas_edit = st.selectbox("Refrigerante", gas_lista, index=idx_gas, key=f"gas_{key_id}")
                     carica_edit = st.number_input("Carica (kg)", value=float(row["carica_kg"]), step=0.1, key=f"kg_{key_id}")
-                    co2_edit = st.number_input("Tonn CO2 Eq", value=float(row["tonn_co2_eq"]), step=0.01, key=f"co2_{key_id}")
                 with nc3:
-                    targa_edit = st.text_input("Codice Targa", value=row["codice_targa"], key=f"targa_{key_id}")
-                    stato_edit = st.selectbox("Stato Lavorazione", ["Da Lavorare", "Completato"], index=0 if row["stato_compilazione"]=="Da Lavorare" else 1, key=f"st_{key_id}")
+                    co2_edit = st.number_input("Tonn CO2 Eq", value=float(row["tonn_co2_eq"]), step=0.01, key=f"co2_{key_id}")
+                    targa_edit = st.text_input("Codice Apparecchiatura (Targa)", value=row["codice_targa"], key=f"targa_{key_id}")
+                
+                stato_edit = st.selectbox("Stato Lavorazione", ["Da Lavorare", "Completato"], index=0 if row["stato_compilazione"] == "Da Lavorare" else 1, key=f"st_{key_id}")
 
                 btn_aggiorna = st.form_submit_button("💾 Salva & Genera Rapportino F-GAS (Firmato)")
 
@@ -132,9 +141,9 @@ if menu == "Dashboard & Impianti":
                     cur_up = conn_up.cursor()
                     cur_up.execute("""
                         UPDATE macchine_hvac 
-                        SET modello = ?, refrigerante = ?, carica_kg = ?, tonn_co2_eq = ?, codice_targa = ?, stato_compilazione = ?
+                        SET modello = ?, matricola = ?, refrigerante = ?, carica_kg = ?, tonn_co2_eq = ?, codice_targa = ?, stato_compilazione = ?
                         WHERE id_macchina = ?
-                    """, (mod_edit, gas_edit, carica_edit, co2_edit, targa_edit, stato_edit, row["id_macchina"]))
+                    """, (mod_edit, matr_edit, gas_edit, carica_edit, co2_edit, targa_edit, stato_edit, row["id_macchina"]))
                     conn_up.commit()
                     conn_up.close()
 
@@ -145,7 +154,7 @@ if menu == "Dashboard & Impianti":
                             "{{UNITA}}": str(row["nr_unita"]),
                             "{{MARCA}}": str(row["marca"]),
                             "{{MODELLO}}": mod_edit,
-                            "{{MATRICOLA}}": str(row["matricola"]),
+                            "{{MATRICOLA}}": matr_edit,
                             "{{TIPO_GAS}}": gas_edit,
                             "{{CARICA_KG}}": f"{carica_edit:.2f}",
                             "{{CO2_EQ}}": f"{co2_edit:.2f}",
@@ -155,7 +164,6 @@ if menu == "Dashboard & Impianti":
                             "{{ESITO_CIRC1}}": "ASSENZA PERDITE"
                         }
                         
-                        # Sostituzione testo
                         for p in doc.paragraphs:
                             for k, v in mappa.items():
                                 if k in p.text:
@@ -168,14 +176,12 @@ if menu == "Dashboard & Impianti":
                                             if k in p.text:
                                                 p.text = p.text.replace(k, str(v))
 
-                        # Inserimento automatico dell'immagine della firma 'firma.jpg' nelle celle con "Firma"
                         if os.path.exists(FIRMA_PATH):
                             for table in doc.tables:
                                 for row_t in table.rows:
                                     for cell in row_t.cells:
                                         if "Firma" in cell.text:
-                                            # Rimuoviamo il testo "Firma" o aggiungiamo l'immagine sotto/al posto del testo
-                                            cell.text = "" # Pulisce la cella o mantiene lo spazio
+                                            cell.text = ""
                                             p_firma = cell.paragraphs[0]
                                             run = p_firma.add_run()
                                             run.add_picture(FIRMA_PATH, width=Inches(1.2))
@@ -183,10 +189,9 @@ if menu == "Dashboard & Impianti":
                         out_file = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{mod_edit}_Unita_{row['nr_unita']}.docx")
                         doc.save(out_file)
                         st.session_state[f"last_generated_{key_id}"] = out_file
-                        st.success("Modifiche salvate e rapportino firmato generato con successo!")
+                        st.success("Modifiche salvate e rapportino firmato generato!")
                         st.rerun()
 
-            # Pulsante di download diretto
             last_file = st.session_state.get(f"last_generated_{key_id}")
             if not last_file:
                 possible_path = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{row['modello']}_Unita_{row['nr_unita']}.docx")
@@ -205,25 +210,56 @@ if menu == "Dashboard & Impianti":
 
 elif menu == "Scan Targhetta (Foto/Camera)":
     st.title("Riconoscimento Impianto da Targhetta in Campo")
-    st.markdown("Scatta una foto con lo smartphone o carica l'immagine della targhetta metallica in copertura per identificare l'unità.")
+    st.markdown("Inquadra la targhetta metallica della macchina: il sistema leggerà automaticamente il codice o ti permetterà di cercarlo al volo.")
 
     img_file = st.camera_input("Scatta foto targhetta")
-    uploaded_img = st.file_uploader("Oppure carica immagine targhetta", type=["jpg", "jpeg", "png"])
+    uploaded_img = st.file_uploader("Oppure carica foto dalla galleria", type=["jpg", "jpeg", "png"])
 
     target_img = img_file if img_file is not None else uploaded_img
+    testo_rilevato = ""
 
     if target_img is not None:
-        st.image(target_img, caption="Targhetta acquisita", use_column_width=True)
-        search_code = st.text_input("Inserisci Codice Targa o Unità letta dalla foto:").strip()
-        if search_code:
-            conn = sqlite3.connect(DB_PATH)
-            df_s = pd.read_sql("SELECT * FROM macchine_hvac WHERE codice_targa LIKE ? OR nr_unita LIKE ?", conn, params=(f"%{search_code}%", f"%{search_code}%"))
-            conn.close()
+        image = Image.open(target_img)
+        st.image(image, caption="Targhetta acquisita", use_container_width=True)
+        
+        try:
+            import pytesseract
+            raw_ocr = pytesseract.image_to_string(image).strip()
+            if raw_ocr:
+                st.success("Testo rilevato dalla targhetta:")
+                st.code(raw_ocr)
+                # Estrae la prima parola/codice utile per precompilare la ricerca
+                parole = [p.strip() for p in raw_ocr.split() if len(p.strip()) >= 3]
+                if parole:
+                    testo_rilevato = parole[0]
+        except Exception:
+            st.info("Lettura OCR automatica non attiva su questo server: inserisci manualmente matricola, targa o unità qui sotto.")
 
-            if not df_s.empty:
-                st.success(f"Trovate {len(df_s)} unità corrispondenti!")
-                for _, match in df_s.iterrows():
-                    st.write(f"**Unità {match['nr_unita']}** - Marca: {match['marca']} - Modello: {match['modello']} - Targa: `{match['codice_targa']}` - Stato: `{match['stato_compilazione']}`")
-            else:
-                st.warning("Nessuna unità trovata con questo codice nel database master.")
-            
+    search_code = st.text_input(
+        "Cerca per Matricola, Codice Apparecchiatura (Targa), Numero Unità o Modello:", 
+        value=testo_rilevato
+    ).strip()
+
+    if search_code:
+        conn = sqlite3.connect(DB_PATH)
+        query_ricerca = """
+            SELECT * FROM macchine_hvac 
+            WHERE LOWER(codice_targa) LIKE ? 
+               OR LOWER(nr_unita) LIKE ? 
+               OR LOWER(matricola) LIKE ? 
+               OR LOWER(modello) LIKE ?
+        """
+        param = f"%{search_code.lower()}%"
+        df_s = pd.read_sql(query_ricerca, conn, params=(param, param, param, param))
+        conn.close()
+
+        if not df_s.empty:
+            st.success(f"Trovate {len(df_s)} unità corrispondenti!")
+            for _, match in df_s.iterrows():
+                st.markdown(f"""
+                * **Unità {match['nr_unita']}** — {match['marca']} `{match['modello']}`
+                  * **Matricola:** `{match['matricola']}` | **Cod. Apparecchiatura:** `{match['codice_targa']}`
+                  * **Gas:** `{match['refrigerante']}` ({match['carica_kg']:.2f} kg) | **Stato:** `{match['stato_compilazione']}`
+                """)
+        else:
+            st.warning("Nessuna unità trovata nel database con questo identificativo.")
