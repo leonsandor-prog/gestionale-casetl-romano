@@ -81,7 +81,6 @@ if menu == "Dashboard & Impianti":
     df_macchine = pd.read_sql("SELECT * FROM macchine_hvac", conn)
     conn.close()
 
-    # Barra di ricerca istantanea su tutti gli identificativi
     search = st.text_input("🔍 Cerca per Unità, Matricola, Codice Apparecchiatura (Targa), Modello o Marca:", "").strip().lower()
     if search:
         df_view = df_macchine[
@@ -226,14 +225,11 @@ elif menu == "Scan Targhetta (Foto/Camera)":
             import pytesseract
             raw_ocr = pytesseract.image_to_string(image).strip()
             if raw_ocr:
-                st.success("Testo rilevato dalla targhetta:")
-                st.code(raw_ocr)
-                # Estrae la prima parola/codice utile per precompilare la ricerca
                 parole = [p.strip() for p in raw_ocr.split() if len(p.strip()) >= 3]
                 if parole:
                     testo_rilevato = parole[0]
         except Exception:
-            st.info("Lettura OCR automatica non attiva su questo server: inserisci manualmente matricola, targa o unità qui sotto.")
+            pass
 
     search_code = st.text_input(
         "Cerca per Matricola, Codice Apparecchiatura (Targa), Numero Unità o Modello:", 
@@ -255,11 +251,118 @@ elif menu == "Scan Targhetta (Foto/Camera)":
 
         if not df_s.empty:
             st.success(f"Trovate {len(df_s)} unità corrispondenti!")
-            for _, match in df_s.iterrows():
-                st.markdown(f"""
-                * **Unità {match['nr_unita']}** — {match['marca']} `{match['modello']}`
-                  * **Matricola:** `{match['matricola']}` | **Cod. Apparecchiatura:** `{match['codice_targa']}`
-                  * **Gas:** `{match['refrigerante']}` ({match['carica_kg']:.2f} kg) | **Stato:** `{match['stato_compilazione']}`
-                """)
+            
+            # Mostra direttamente i risultati con gli expander di modifica e generazione rapportino
+            for _, row in df_s.iterrows():
+                key_id = str(row["id_macchina"]).replace(" ", "_").replace("/", "_")
+                stato = row["stato_compilazione"]
+                pallino = "🟢" if stato == "Completato" else "🟡"
+                is_single = (len(df_s) == 1)
+
+                with st.expander(f"{pallino} Unità {row['nr_unita']} — {row['marca']} {row['modello']} | Targa: `{row['codice_targa']}` | Matr: `{row['matricola']}`", expanded=is_single):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Dati Impianto & Identificativi**")
+                        st.write(f"- **Collocazione:** `{row['collocazione']}`")
+                        st.write(f"- **Matricola:** `{row['matricola']}`")
+                        st.write(f"- **Cod. Apparecchiatura:** `{row['codice_targa']}`")
+                    with c2:
+                        st.markdown("**Parametri F-GAS**")
+                        st.write(f"- **Refrigerante:** `{row['refrigerante']}`")
+                        st.write(f"- **Carica:** `{row['carica_kg']:.2f} kg`")
+                        st.write(f"- **Tonn. CO2 Eq:** `{row['tonn_co2_eq']:.2f} t`")
+
+                    st.divider()
+
+                    with st.form(key=f"form_scan_{key_id}"):
+                        st.markdown("##### ✏️ Verifica e Modifica Dati in Campo")
+                        nc1, nc2, nc3 = st.columns(3)
+                        with nc1:
+                            mod_edit = st.text_input("Modello", value=row["modello"], key=f"mod_s_{key_id}")
+                            matr_edit = st.text_input("Matricola", value=row["matricola"], key=f"matr_s_{key_id}")
+                        with nc2:
+                            gas_lista = ["R-410A", "R-407C", "R-32", "R-134a"]
+                            idx_gas = gas_lista.index(row["refrigerante"]) if row["refrigerante"] in gas_lista else 0
+                            gas_edit = st.selectbox("Refrigerante", gas_lista, index=idx_gas, key=f"gas_s_{key_id}")
+                            carica_edit = st.number_input("Carica (kg)", value=float(row["carica_kg"]), step=0.1, key=f"kg_s_{key_id}")
+                        with nc3:
+                            co2_edit = st.number_input("Tonn CO2 Eq", value=float(row["tonn_co2_eq"]), step=0.01, key=f"co2_s_{key_id}")
+                            targa_edit = st.text_input("Codice Apparecchiatura (Targa)", value=row["codice_targa"], key=f"targa_s_{key_id}")
+                        
+                        stato_edit = st.selectbox("Stato Lavorazione", ["Da Lavorare", "Completato"], index=0 if row["stato_compilazione"] == "Da Lavorare" else 1, key=f"st_s_{key_id}")
+
+                        btn_aggiorna_scan = st.form_submit_button("💾 Salva & Genera Rapportino F-GAS (Firmato)")
+
+                        if btn_aggiorna_scan:
+                            conn_up = sqlite3.connect(DB_PATH)
+                            cur_up = conn_up.cursor()
+                            cur_up.execute("""
+                                UPDATE macchine_hvac 
+                                SET modello = ?, matricola = ?, refrigerante = ?, carica_kg = ?, tonn_co2_eq = ?, codice_targa = ?, stato_compilazione = ?
+                                WHERE id_macchina = ?
+                            """, (mod_edit, matr_edit, gas_edit, carica_edit, co2_edit, targa_edit, stato_edit, row["id_macchina"]))
+                            conn_up.commit()
+                            conn_up.close()
+
+                            os.makedirs(OUTPUT_DIR, exist_ok=True)
+                            if os.path.exists(TEMPLATE_FGAS_PATH):
+                                doc = Document(TEMPLATE_FGAS_PATH)
+                                mappa = {
+                                    "{{UNITA}}": str(row["nr_unita"]),
+                                    "{{MARCA}}": str(row["marca"]),
+                                    "{{MODELLO}}": mod_edit,
+                                    "{{MATRICOLA}}": matr_edit,
+                                    "{{TIPO_GAS}}": gas_edit,
+                                    "{{CARICA_KG}}": f"{carica_edit:.2f}",
+                                    "{{CO2_EQ}}": f"{co2_edit:.2f}",
+                                    "{{COD_APP}}": targa_edit,
+                                    "{{DATA_INTERVENTO}}": oggi.strftime("%d/%m/%Y"),
+                                    "{{SCADENZA_VERIFICA}}": str(row["scadenza_verifica"]),
+                                    "{{ESITO_CIRC1}}": "ASSENZA PERDITE"
+                                }
+                                
+                                for p in doc.paragraphs:
+                                    for k, v in mappa.items():
+                                        if k in p.text:
+                                            p.text = p.text.replace(k, str(v))
+                                for t in doc.tables:
+                                    for r in t.rows:
+                                        for c in r.cells:
+                                            for p in c.paragraphs:
+                                                for k, v in mappa.items():
+                                                    if k in p.text:
+                                                        p.text = p.text.replace(k, str(v))
+
+                                if os.path.exists(FIRMA_PATH):
+                                    for table in doc.tables:
+                                        for row_t in table.rows:
+                                            for cell in row_t.cells:
+                                                if "Firma" in cell.text:
+                                                    cell.text = ""
+                                                    p_firma = cell.paragraphs[0]
+                                                    run = p_firma.add_run()
+                                                    run.add_picture(FIRMA_PATH, width=Inches(1.2))
+
+                                out_file = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{mod_edit}_Unita_{row['nr_unita']}.docx")
+                                doc.save(out_file)
+                                st.session_state[f"last_generated_scan_{key_id}"] = out_file
+                                st.success("Modifiche salvate e rapportino firmato generato!")
+                                st.rerun()
+
+                    last_file_scan = st.session_state.get(f"last_generated_scan_{key_id}")
+                    if not last_file_scan:
+                        possible_path = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{row['modello']}_Unita_{row['nr_unita']}.docx")
+                        if os.path.exists(possible_path):
+                            last_file_scan = possible_path
+
+                    if last_file_scan and os.path.exists(last_file_scan):
+                        with open(last_file_scan, "rb") as f_dl_s:
+                            st.download_button(
+                                label=f"📥 Scarica Rapportino F-GAS Firmato ({os.path.basename(last_file_scan)})",
+                                data=f_dl_s,
+                                file_name=os.path.basename(last_file_scan),
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key=f"btn_dl_scan_{key_id}"
+                            )
         else:
             st.warning("Nessuna unità trovata nel database con questo identificativo.")
