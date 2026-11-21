@@ -24,6 +24,7 @@ GWP_MAP = {
     "R-507A": 3985.0,
 }
 
+
 def get_gwp(refrigerante: str) -> float:
     if not refrigerante:
         return 2088.0
@@ -35,11 +36,27 @@ def get_gwp(refrigerante: str) -> float:
             return v
     return 2088.0
 
+
 def calcola_co2_tonnellate(carica_kg: float, refrigerante: str) -> float:
     gwp = get_gwp(refrigerante)
     return round((float(carica_kg or 0.0) * gwp) / 1000.0, 2)
 
-def salva_su_excel(row_data: dict, n_circ: int, c1_kg: float, c2_kg: float, co2_c1: float, co2_c2: float, carica_tot: float, co2_tot: float, mod_val: str, matr_val: str, gas_val: str, targa_val: str, stato_val: str):
+
+def salva_su_excel(
+    row_data: dict,
+    n_circ: int,
+    c1_kg: float,
+    c2_kg: float,
+    co2_c1: float,
+    co2_c2: float,
+    carica_tot: float,
+    co2_tot: float,
+    mod_val: str,
+    matr_val: str,
+    gas_val: str,
+    targa_val: str,
+    stato_val: str,
+):
     if not os.path.exists(EXCEL_PATH):
         return False, "File Excel non trovato."
 
@@ -48,9 +65,15 @@ def salva_su_excel(row_data: dict, n_circ: int, c1_kg: float, c2_kg: float, co2_
         foglio = xls.sheet_names[0]
         df_xl = pd.read_excel(xls, sheet_name=foglio)
 
-        col_unita = next((c for c in ["Unità / Macchina", "Unità", "Descrizione", "nr_unita"] if c in df_xl.columns), None)
+        col_unita = next(
+            (c for c in ["Unità / Macchina", "Unità", "Descrizione", "nr_unita"] if c in df_xl.columns),
+            None,
+        )
         col_matr = next((c for c in ["Matricola", "matricola"] if c in df_xl.columns), None)
-        col_targa = next((c for c in ["Cod. Apparecchiatura", "Codice Targa", "codice_targa"] if c in df_xl.columns), None)
+        col_targa = next(
+            (c for c in ["Cod. Apparecchiatura", "Codice Targa", "codice_targa"] if c in df_xl.columns),
+            None,
+        )
 
         mask = pd.Series([False] * len(df_xl))
         if col_unita and str(row_data["nr_unita"]).strip():
@@ -88,11 +111,13 @@ def salva_su_excel(row_data: dict, n_circ: int, c1_kg: float, c2_kg: float, co2_
     except Exception as e:
         return False, f"Errore aggiornamento Excel: {e}"
 
+
 def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS macchine_hvac (
             id_macchina TEXT PRIMARY KEY,
             collocazione TEXT,
@@ -112,9 +137,9 @@ def init_db():
             co2_circ1 REAL DEFAULT 0.0,
             co2_circ2 REAL DEFAULT 0.0
         )
-    """)
+        """
+    )
 
-    # Migrazione sicura se il DB esisteva già senza le nuove colonne
     cursor.execute("PRAGMA table_info(macchine_hvac)")
     colonne_esistenti = {info[1] for info in cursor.fetchall()}
     nuove_colonne = {
@@ -139,10 +164,18 @@ def init_db():
             modello = str(row.get("Modello", "")).strip()
             matricola = str(row.get("Matricola", modello)).strip()
             refrigerante = str(row.get("Refrigerante", row.get("Tipo Gas", "R-410A"))).strip()
-            tonn_co2 = float(row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0)) if pd.notna(row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0))) else 0.0)
+            tonn_co2 = float(
+                row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0))
+                if pd.notna(row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0)))
+                else 0.0
+            )
             carica_col = row.get("Carica Refrigerante (kg)", row.get("Carica (kg)", 0.0))
             gwp_val = get_gwp(refrigerante)
-            carica_kg = float(carica_col) if pd.notna(carica_col) and float(carica_col) != 0.0 else ((tonn_co2 * 1000.0) / gwp_val if tonn_co2 > 0 else 0.0)
+            carica_kg = (
+                float(carica_col)
+                if pd.notna(carica_col) and float(carica_col) != 0.0
+                else ((tonn_co2 * 1000.0) / gwp_val if tonn_co2 > 0 else 0.0)
+            )
             if tonn_co2 == 0.0 and carica_kg > 0:
                 tonn_co2 = calcola_co2_tonnellate(carica_kg, refrigerante)
 
@@ -152,49 +185,60 @@ def init_db():
             raw_ncirc = row.get("N_Circuiti", 1)
             n_circ = 2 if pd.notna(raw_ncirc) and int(float(raw_ncirc)) == 2 else 1
 
-            c1_val = float(row.get("Carica_Circ_1_Kg", carica_kg / 2 if n_circ == 2 else carica_kg) if pd.notna(row.get("Carica_Circ_1_Kg")) else (carica_kg / 2 if n_circ == 2 else carica_kg))
-            c2_val = float(row.get("Carica_Circ_2_Kg", carica_kg / 2 if n_circ == 2 else 0.0) if pd.notna(row.get("Carica_Circ_2_Kg")) else (carica_kg / 2 if n_circ == 2 else 0.0))
+            c1_val = float(
+                row.get("Carica_Circ_1_Kg", carica_kg / 2 if n_circ == 2 else carica_kg)
+                if pd.notna(row.get("Carica_Circ_1_Kg"))
+                else (carica_kg / 2 if n_circ == 2 else carica_kg)
+            )
+            c2_val = float(
+                row.get("Carica_Circ_2_Kg", carica_kg / 2 if n_circ == 2 else 0.0)
+                if pd.notna(row.get("Carica_Circ_2_Kg"))
+                else (carica_kg / 2 if n_circ == 2 else 0.0)
+            )
             co2_1_val = calcola_co2_tonnellate(c1_val, refrigerante)
             co2_2_val = calcola_co2_tonnellate(c2_val, refrigerante) if n_circ == 2 else 0.0
 
             id_unic = f"{nr_unita}_{modello}_{matricola}"
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT OR IGNORE INTO macchine_hvac
                 (id_macchina, collocazione, nr_unita, marca, modello, matricola, refrigerante, tonn_co2_eq, carica_kg, codice_targa, scadenza_verifica, stato_compilazione, n_circuiti, carica_circ1, carica_circ2, co2_circ1, co2_circ2)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                id_unic, collocazione, nr_unita, marca, modello, matricola, refrigerante, tonn_co2, carica_kg, codice_targa, scadenza, "Da Lavorare", n_circ, c1_val, c2_val, co2_1_val, co2_2_val
-            ))
+                """,
+                (
+                    id_unic,
+                    collocazione,
+                    nr_unita,
+                    marca,
+                    modello,
+                    matricola,
+                    refrigerante,
+                    tonn_co2,
+                    carica_kg,
+                    codice_targa,
+                    scadenza,
+                    "Da Lavorare",
+                    n_circ,
+                    c1_val,
+                    c2_val,
+                    co2_1_val,
+                    co2_2_val,
+                ),
+            )
 
     conn.commit()
     conn.close()
 
-def genera_report_docx(row, mod_edit, matr_edit, gas_edit, targa_edit, stato_edit, n_circ_edit, c1_edit, c2_edit, co2_c1_calc, co2_c2_calc, carica_tot_calc, co2_tot_calc, oggi):
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    if not os.path.exists(TEMPLATE_FGAS_PATH):
-        return None, "Template Word non trovato."
 
-    doc = Document(TEMPLATE_FGAS_PATH)
-    mappa = {
-        "{{UNITA}}": str(row["nr_unita"]),
-        "{{MARCA}}": str(row["marca"]),
-        "{{MODELLO}}": mod_edit,
-        "{{MATRICOLA}}": matr_edit,
-        "{{TIPO_GAS}}": gas_edit,
-        "{{CARICA_KG}}": f"{carica_tot_calc:.2f}",
-        "{{CARICA_KG 1}}": f"{c1_edit:.2f}",
-        "{{CARICA_KG 2}}": f"{c2_edit:.2f}" if n_circ_edit == 2 else "",
-        "{{CO2_EQ}}": f"{co2_tot_calc:.2f}",
-        "{{CO2_EQ 1}}": f"{co2_c1_calc:.2f}",
-        "{{CO2_EQ 2}}": f"{co2_c2_calc:.2f}" if n_circ_edit == 2 else "",
-        "{{CIRQUITTI}}": str(n_circ_edit),
-        "{{ CIRQUITTI}}": str(n_circ_edit),
-        "{{COD_APP}}": targa_edit,
-        "{{DATA_INTERVENTO}}": oggi.strftime("%d/%m/%Y"),
-        "{{SCADENZA_VERIFICA}}": str(row["scadenza_verifica"]),
-        "{{ESITO_CIRC1}}": "ASSENZA PERDITE",
-    }
-
-    for p in doc.paragraphs:
-        for k, v
+def genera_report_docx(
+    row,
+    mod_edit,
+    matr_edit,
+    gas_edit,
+    targa_edit,
+    stato_edit,
+    n_circ_edit,
+    c1_edit,
+    c2_edit,
+    co2_c1
