@@ -557,4 +557,41 @@ elif menu == "Scan Targhetta (Foto/Camera)":
 
     if target_img is not None:
         image = Image.open(target_img)
-        st.image(image,
+        st.image(image, caption="Targhetta acquisita", use_container_width=True)
+
+        try:
+            import pytesseract
+
+            raw_ocr = pytesseract.image_to_string(image).strip()
+            if raw_ocr:
+                parole = [p.strip() for p in raw_ocr.split() if len(p.strip()) >= 3]
+                if parole:
+                    testo_rilevato = parole[0]
+        except Exception:
+            pass
+
+    search_code = st.text_input(
+        "Cerca per Matricola, Codice Apparecchiatura (Targa), Numero Unità o Modello:",
+        value=testo_rilevato,
+    ).strip()
+
+    if search_code:
+        conn = sqlite3.connect(DB_PATH)
+        query_ricerca = """
+            SELECT * FROM macchine_hvac
+            WHERE LOWER(codice_targa) LIKE ?
+               OR LOWER(nr_unita) LIKE ?
+               OR LOWER(matricola) LIKE ?
+               OR LOWER(modello) LIKE ?
+        """
+        param = f"%{search_code.lower()}%"
+        df_s = pd.read_sql(query_ricerca, conn, params=(param, param, param, param))
+        conn.close()
+
+        if not df_s.empty:
+            st.success(f"Trovate {len(df_s)} unità corrispondenti!")
+            is_single = len(df_s) == 1
+            for _, row in df_s.iterrows():
+                render_scheda_unita(row, prefix="scan", oggi=oggi, expanded=is_single)
+        else:
+            st.warning("Nessuna unità trovata nel database con questo identificativo.")
