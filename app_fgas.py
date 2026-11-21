@@ -237,6 +237,13 @@ def init_db():
     conn.close()
 
 
+def _inserisci_firma_in_cella(cell, firma_path: str):
+    cell.text = ""
+    p_firma = cell.paragraphs[0]
+    run = p_firma.add_run()
+    run.add_picture(firma_path, width=Inches(1.2))
+
+
 def genera_report_docx(
     row,
     mod_edit,
@@ -258,6 +265,7 @@ def genera_report_docx(
         return None, "Template Word non trovato."
 
     doc = Document(TEMPLATE_FGAS_PATH)
+    data_str = oggi.strftime("%d/%m/%Y")
     mappa = {
         "{{UNITA}}": str(row["nr_unita"]),
         "{{MARCA}}": str(row["marca"]),
@@ -273,7 +281,7 @@ def genera_report_docx(
         "{{CIRQUITTI}}": str(n_circ_edit),
         "{{ CIRQUITTI}}": str(n_circ_edit),
         "{{COD_APP}}": targa_edit,
-        "{{DATA_INTERVENTO}}": oggi.strftime("%d/%m/%Y"),
+        "{{DATA_INTERVENTO}}": data_str,
         "{{SCADENZA_VERIFICA}}": str(row["scadenza_verifica"]),
         "{{ESITO_CIRC1}}": "ASSENZA PERDITE",
     }
@@ -283,23 +291,38 @@ def genera_report_docx(
             if k in p.text:
                 p.text = p.text.replace(k, str(v))
 
+    firma_inserita = False
     for t in doc.tables:
         for r in t.rows:
             for c in r.cells:
+                if "{{FIRMA}}" in c.text:
+                    for p in c.paragraphs:
+                        if "{{FIRMA}}" in p.text:
+                            p.text = p.text.replace("{{FIRMA}}", "")
+                    if os.path.exists(FIRMA_PATH):
+                        _inserisci_firma_in_cella(c, FIRMA_PATH)
+                        firma_inserita = True
+                    continue
+
                 for p in c.paragraphs:
                     for k, v in mappa.items():
                         if k in p.text:
                             p.text = p.text.replace(k, str(v))
 
-    if os.path.exists(FIRMA_PATH):
-        for table in doc.tables:
-            for row_t in table.rows:
-                for cell in row_t.cells:
-                    if "Firma" in cell.text:
-                        cell.text = ""
-                        p_firma = cell.paragraphs[0]
-                        run = p_firma.add_run()
-                        run.add_picture(FIRMA_PATH, width=Inches(1.2))
+    # Fallback se {{FIRMA}} non è presente come tag: firma solo la prima cella "Firma"
+    # (sezione controllo perdite), lasciando vuota quella in basso senza intervento.
+    if not firma_inserita and os.path.exists(FIRMA_PATH):
+        for t in doc.tables:
+            for r in t.rows:
+                for c in r.cells:
+                    if c.text.strip().lower().startswith("firma"):
+                        _inserisci_firma_in_cella(c, FIRMA_PATH)
+                        firma_inserita = True
+                        break
+                if firma_inserita:
+                    break
+            if firma_inserita:
+                break
 
     nome_file = (
         f"Report_FGAS_{sanitize_filename(row['marca'])}_{sanitize_filename(mod_edit)}"
