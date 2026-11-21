@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import re
 from datetime import datetime
 import pandas as pd
 from docx import Document
@@ -23,6 +24,11 @@ GWP_MAP = {
     "R-404A": 3922.0,
     "R-507A": 3985.0,
 }
+
+
+def sanitize_filename(val: str) -> str:
+    cleaned = re.sub(r'[\\/*?:"<>|\s]+', "_", str(val or "").strip())
+    return cleaned.strip("_") or "NA"
 
 
 def get_gwp(refrigerante: str) -> float:
@@ -295,13 +301,17 @@ def genera_report_docx(
                         run = p_firma.add_run()
                         run.add_picture(FIRMA_PATH, width=Inches(1.2))
 
-    out_file = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{mod_edit}_Unita_{row['nr_unita']}.docx")
+    nome_file = (
+        f"Report_FGAS_{sanitize_filename(row['marca'])}_{sanitize_filename(mod_edit)}"
+        f"_Unita_{sanitize_filename(row['nr_unita'])}.docx"
+    )
+    out_file = os.path.join(OUTPUT_DIR, nome_file)
     doc.save(out_file)
     return out_file, None
 
 
 def render_scheda_unita(row, prefix, oggi, expanded=False):
-    key_id = f"{prefix}_{str(row['id_macchina']).replace(' ', '_').replace('/', '_')}"
+    key_id = f"{prefix}_{sanitize_filename(row['id_macchina'])}"
     stato = row["stato_compilazione"]
     pallino = "🟢" if stato == "Completato" else "🟡"
 
@@ -495,7 +505,11 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
 
         last_file = st.session_state.get(f"last_generated_{key_id}")
         if not last_file:
-            possible_path = os.path.join(OUTPUT_DIR, f"Report_FGAS_{row['marca']}_{row['modello']}_Unita_{row['nr_unita']}.docx")
+            possible_path = os.path.join(
+                OUTPUT_DIR,
+                f"Report_FGAS_{sanitize_filename(row['marca'])}_{sanitize_filename(row['modello'])}"
+                f"_Unita_{sanitize_filename(row['nr_unita'])}.docx",
+            )
             if os.path.exists(possible_path):
                 last_file = possible_path
 
