@@ -1,6 +1,8 @@
 import sqlite3
 import os
 import re
+import io
+import zipfile
 from datetime import datetime
 import pandas as pd
 from docx import Document
@@ -13,6 +15,21 @@ EXCEL_PATH = "F_GAS_Impianti_Attivi_2026_.xlsx"
 TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
 OUTPUT_DIR = "Report_FGAS_Generati_2026"
 FIRMA_PATH = "firma.jpg"
+
+MESI_ITALIANI = {
+    1: "01_Gennaio",
+    2: "02_Febbraio",
+    3: "03_Marzo",
+    4: "04_Aprile",
+    5: "05_Maggio",
+    6: "06_Giugno",
+    7: "07_Luglio",
+    8: "08_Agosto",
+    9: "09_Settembre",
+    10: "10_Ottobre",
+    11: "11_Novembre",
+    12: "12_Dicembre",
+}
 
 GWP_MAP = {
     "R-410A": 2088.0,
@@ -46,6 +63,45 @@ def get_gwp(refrigerante: str) -> float:
 def calcola_co2_tonnellate(carica_kg: float, refrigerante: str) -> float:
     gwp = get_gwp(refrigerante)
     return round((float(carica_kg or 0.0) * gwp) / 1000.0, 2)
+
+
+def normalizza_data_anno_corrente(data_raw, anno_corrente: int):
+    """
+    Mantiene giorno e mese invariati dalla scadenza e sostituisce l'anno con anno_corrente.
+    Restituisce (stringa_dd_mm_yyyy, numero_mese_int, cartella_mese_str).
+    """
+    s = str(data_raw or "").strip()
+    dt = None
+
+    # Prova formati comuni dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d/%m/%y"):
+        try:
+            dt = datetime.strptime(s.split()[0], fmt)
+            break
+        except Exception:
+            continue
+
+    if dt is None:
+        m = re.search(r"(\d{1,2})[/\-.](\d{1,2})", s)
+        if m:
+            giorno = int(m.group(1))
+            mese = int(m.group(2))
+            try:
+                dt = datetime(anno_corrente, mese, giorno)
+            except ValueError:
+                dt = datetime(anno_corrente, 4, 14)
+        else:
+            dt = datetime(anno_corrente, 4, 14)
+
+    try:
+        dt_corrente = dt.replace(year=anno_corrente)
+    except ValueError:
+        # Gestione 29 febbraio su anno non bisestile
+        dt_corrente = dt.replace(year=anno_corrente, day=28)
+
+    mese_num = dt_corrente.month
+    cartella_mese = MESI_ITALIANI.get(mese_num, f"{mese_num:02d}_Mese")
+    return dt_corrente.strftime("%d/%m/%Y"), mese_num, cartella_mese
 
 
 def salva_su_excel(
@@ -259,13 +315,18 @@ def genera_report_docx(
     carica_tot_calc,
     co2_tot_calc,
     oggi,
+    target_dir=OUTPUT_DIR,
+    data_intervento_custom=None,
+    scadenza_custom=None,
 ):
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
     if not os.path.exists(TEMPLATE_FGAS_PATH):
         return None, "Template Word non trovato."
 
     doc = Document(TEMPLATE_FGAS_PATH)
-    data_str = oggi.strftime("%d/%m/%Y")
+    data_str = data_intervento_custom if data_intervento_custom else oggi.strftime("%d/%m/%Y")
+    scadenza_str = scadenza_custom if scadenza_custom else str(row["scadenza_verifica"])
+
     mappa = {
         "{{UNITA}}": str(row["nr_unita"]),
         "{{MARCA}}": str(row["marca"]),
@@ -282,7 +343,7 @@ def genera_report_docx(
         "{{ CIRQUITTI}}": str(n_circ_edit),
         "{{COD_APP}}": targa_edit,
         "{{DATA_INTERVENTO}}": data_str,
-        "{{SCADENZA_VERIFICA}}": str(row["scadenza_verifica"]),
+        "{{SCADENZA_VERIFICA}}": scadenza_str,
         "{{ESITO_CIRC1}}": "ASSENZA PERDITE",
     }
 
@@ -309,8 +370,6 @@ def genera_report_docx(
                         if k in p.text:
                             p.text = p.text.replace(k, str(v))
 
-    # Fallback se {{FIRMA}} non è presente come tag: firma solo la prima cella "Firma"
-    # (sezione controllo perdite), lasciando vuota quella in basso senza intervento.
     if not firma_inserita and os.path.exists(FIRMA_PATH):
         for t in doc.tables:
             for r in t.rows:
@@ -328,9 +387,78 @@ def genera_report_docx(
         f"Report_FGAS_{sanitize_filename(row['marca'])}_{sanitize_filename(mod_edit)}"
         f"_Unita_{sanitize_filename(row['nr_unita'])}.docx"
     )
-    out_file = os.path.join(OUTPUT_DIR, nome_file)
+    out_file = os.path.join(target_dir, nome_file)
     doc.save(out_file)
     return out_file, None
+
+
+def genera_zip_mensile_anno_corrente(anno_corrente: int):
+    """
+    Genera tutti i rapportini F-GAS aggiornati dal DB/Excel, impostando
+    l'anno corrente (mantenendo invariati giorno e mese della scadenza),
+    li divide in sottocartelle per mese e crea uno ZIP scaricabile in memoria.
+    """
+    if not os.path.exists(TEMPLATE_FGAS_PATH):
+        return None, 0, "Template Word non trovato."
+
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    df_all = pd.read_sql("SELECT * FROM macchine_hvac", conn)
+    conn.close()
+
+    if df_all.empty:
+        return None, 0, "Nessuna macchina presente nel database."
+
+    base_batch_dir = os.path.join(OUTPUT_DIR, f"Batch_Mensile_{anno_corrente}")
+    os.makedirs(base_batch_dir, exist_ok=True)
+
+    zip_buffer = io.BytesIO()
+    oggi_now = datetime.now()
+    tot_generati = 0
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for _, row in df_all.iterrows():
+            data_corr_str, _, cartella_mese = normalizza_data_anno_corrente(
+                row.get("scadenza_verifica"), anno_corrente
+            )
+
+            n_circ = 2 if pd.notna(row.get("n_circuiti")) and int(row.get("n_circuiti")) == 2 else 1
+            carica_tot = float(row.get("carica_kg") or 0.0)
+            c1 = float(row.get("carica_circ1") or (carica_tot / 2.0 if n_circ == 2 else carica_tot))
+            c2 = float(row.get("carica_circ2") or (carica_tot / 2.0 if n_circ == 2 else 0.0))
+
+            gas = str(row.get("refrigerante") or "R-410A").strip()
+            co2_1 = calcola_co2_tonnellate(c1, gas)
+            co2_2 = calcola_co2_tonnellate(c2, gas) if n_circ == 2 else 0.0
+            co2_tot = round(co2_1 + co2_2, 2)
+
+            mese_dir = os.path.join(base_batch_dir, cartella_mese)
+            out_file, err = genera_report_docx(
+                row=row,
+                mod_edit=str(row.get("modello") or ""),
+                matr_edit=str(row.get("matricola") or ""),
+                gas_edit=gas,
+                targa_edit=str(row.get("codice_targa") or ""),
+                stato_edit=str(row.get("stato_compilazione") or "Completato"),
+                n_circ_edit=n_circ,
+                c1_edit=c1,
+                c2_edit=c2,
+                co2_c1_calc=co2_1,
+                co2_c2_calc=co2_2,
+                carica_tot_calc=round(c1 + c2, 2),
+                co2_tot_calc=co2_tot,
+                oggi=oggi_now,
+                target_dir=mese_dir,
+                data_intervento_custom=data_corr_str,
+                scadenza_custom=data_corr_str,
+            )
+
+            if out_file and os.path.exists(out_file):
+                arcname = os.path.join(cartella_mese, os.path.basename(out_file))
+                zf.write(out_file, arcname=arcname)
+                tot_generati += 1
+
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue(), tot_generati, None
 
 
 def render_scheda_unita(row, prefix, oggi, expanded=False):
@@ -551,14 +679,56 @@ init_db()
 
 st.set_page_config(page_title="CBRE GWS - F-GAS Castel Romano", layout="wide")
 
+oggi = datetime.now()
+anno_corrente = oggi.year
+
 st.sidebar.title("CBRE GWS - Castel Romano")
 st.sidebar.markdown("### 🗂️ Registro F-GAS 2026")
 menu = st.sidebar.radio("Sezione:", ["Dashboard & Impianti", "Scan Targhetta (Foto/Camera)"])
 
-oggi = datetime.now()
+st.sidebar.divider()
+st.sidebar.markdown("### 📦 Esportazione Massiva")
+if st.sidebar.button("📦 Genera Tutti i Rapportini per Mese (Anno Corrente)"):
+    with st.spinner("Generazione rapportini divisi per mese in corso..."):
+        zip_bytes, count_doc, err_zip = genera_zip_mensile_anno_corrente(anno_corrente)
+        if err_zip:
+            st.sidebar.error(err_zip)
+        else:
+            st.session_state["zip_mensile_data"] = zip_bytes
+            st.session_state["zip_mensile_count"] = count_doc
+
+if "zip_mensile_data" in st.session_state and st.session_state["zip_mensile_data"]:
+    st.sidebar.success(f"Pronti {st.session_state['zip_mensile_count']} rapportini divisi per mese!")
+    st.sidebar.download_button(
+        label=f"⬇️ Scarica ZIP Rapportini {anno_corrente} per Mese",
+        data=st.session_state["zip_mensile_data"],
+        file_name=f"Rapportini_FGAS_{anno_corrente}_Divisi_Per_Mese.zip",
+        mime="application/zip",
+        key="dl_zip_sidebar",
+    )
 
 if menu == "Dashboard & Impianti":
     st.title("Gestione Registro & Rapportini F-GAS")
+
+    col_exp1, col_exp2 = st.columns([1, 1])
+    with col_exp1:
+        if st.button("📦 Genera Tutti i Rapportini Divisi per Mese (ZIP Anno Corrente)", key="btn_zip_main"):
+            with st.spinner("Creazione pacchetto mensile in corso..."):
+                zip_bytes, count_doc, err_zip = genera_zip_mensile_anno_corrente(anno_corrente)
+                if err_zip:
+                    st.error(err_zip)
+                else:
+                    st.session_state["zip_mensile_data"] = zip_bytes
+                    st.session_state["zip_mensile_count"] = count_doc
+    with col_exp2:
+        if "zip_mensile_data" in st.session_state and st.session_state["zip_mensile_data"]:
+            st.download_button(
+                label=f"⬇️ Scarica ZIP ({st.session_state['zip_mensile_count']} rapportini - {anno_corrente})",
+                data=st.session_state["zip_mensile_data"],
+                file_name=f"Rapportini_FGAS_{anno_corrente}_Divisi_Per_Mese.zip",
+                mime="application/zip",
+                key="dl_zip_main",
+            )
 
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     df_macchine = pd.read_sql("SELECT * FROM macchine_hvac", conn)
@@ -599,11 +769,28 @@ elif menu == "Scan Targhetta (Foto/Camera)":
         try:
             import pytesseract
 
-            raw_ocr = pytesseract.image_to_string(image).strip()
+            raw_ocr = pytesseract.image_to_string(image, config="--psm 6").strip()
             if raw_ocr:
-                parole = [p.strip() for p in raw_ocr.split() if len(p.strip()) >= 3]
-                if parole:
-                    testo_rilevato = parole[0]
+                candidati = []
+                for token in raw_ocr.split():
+                    pulito = re.sub(r"^[^A-Za-z0-9*]+|[^A-Za-z0-9*]+$", "", token)
+                    if len(pulito) >= 5 and any(c.isalpha() for c in pulito) and any(c.isdigit() for c in pulito):
+                        if pulito not in candidati:
+                            candidati.append(pulito)
+
+                if candidati:
+                    testo_rilevato = max(candidati, key=len)
+                    scelto_ocr = st.selectbox(
+                        "Codici rilevati dalla targhetta (seleziona per cercare):",
+                        options=candidati,
+                        index=candidati.index(testo_rilevato),
+                    )
+                    if scelto_ocr:
+                        testo_rilevato = scelto_ocr
+                else:
+                    parole = [p.strip() for p in raw_ocr.split() if len(p.strip()) >= 3]
+                    if parole:
+                        testo_rilevato = parole[0]
         except Exception:
             pass
 
