@@ -925,3 +925,43 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
+"nr_unita",
+                    "marca",
+                    "modello",
+                    "matricola",
+                    "collocazione",
+                    "codice_targa",
+                    "refrigerante",
+                )
+            ).lower()
+            if filtro_testo not in blob:
+                continue
+        filtrate.append(m)
+
+    st.markdown(f"**Unità visualizzate:** `{len(filtrate)}` su `{tot_unita}`")
+
+    tab_tutte, tab_da_lav, tab_comp = st.tabs(
+        [
+            f"📋 Tutte ({len(filtrate)})",
+            f"🟡 Da Lavorare ({sum(1 for x in filtrate if x.get('stato_compilazione') != 'Completato')})",
+            f"🟢 Completate ({sum(1 for x in filtrate if x.get('stato_compilazione') == 'Completato')})",
+        ]
+    )
+
+    with tab_tutte:
+        for idx, r in enumerate(filtrate):
+            render_scheda_unita(r, "all", oggi, expanded=(idx == 0 and len(filtrate) == 1))
+
+    with tab_da_lav:
+        lista_dl = [x for x in filtrate if x.get("stato_compilazione") != "Completato"]
+        for r in lista_dl:
+            render_scheda_unita(r, "dl", oggi, expanded=False)
+
+    with tab_comp:
+        lista_ok = [x for x in filtrate if x.get("stato_compilazione") == "Completato"]
+        for r in lista_ok:
+            render_scheda_unita(r, "ok", oggi, expanded=False)
+
+
+if __name__ == "__main__":
+    main()
