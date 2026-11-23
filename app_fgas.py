@@ -358,7 +358,10 @@ def init_db():
     xls = pd.ExcelFile(EXCEL_PATH)
     df_excel = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
 
-    for _, row in df_excel.iterrows():
+    # Pulisce le righe vecchie per evitare doppioni o residui (es. 520 vs 261)
+    cursor.execute("DELETE FROM macchine_hvac")
+
+    for idx, row in df_excel.iterrows():
       collocazione = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
       nr_unita = str(
           row.get(
@@ -368,11 +371,21 @@ def init_db():
       marca = str(row.get("Marca", "")).strip()
       modello = str(row.get("Modello", "")).strip()
       matricola = str(
-          row.get("Matricola", modello) if pd.notna(row.get("Matricola")) else modello
+          row.get("Matricola", modello)
+          if pd.notna(row.get("Matricola"))
+          else modello
       ).strip()
       refrigerante = str(
-          row.get("Tipo HCFC", row.get("Refrigerante", row.get("Tipo Gas", "R-410A")))
-          if pd.notna(row.get("Tipo HCFC", row.get("Refrigerante", "R-410A")))
+          row.get(
+              "Tipo HCFC",
+              row.get("Refrigerante", row.get("Tipo Gas", "R-410A")),
+          )
+          if pd.notna(
+              row.get(
+                  "Tipo HCFC",
+                  row.get("Refrigerante", row.get("Tipo Gas", "R-410A")),
+              )
+          )
           else "R-410A"
       ).strip()
       tonn_co2 = float(
@@ -420,18 +433,28 @@ def init_db():
           else (carica_kg / 2 if n_circ == 2 else 0.0)
       )
       co2_1_val = calcola_co2_tonnellate(c1_val, refrigerante)
-      co2_2_val = calcola_co2_tonnellate(c2_val, refrigerante) if n_circ == 2 else 0.0
+      co2_2_val = (
+          calcola_co2_tonnellate(c2_val, refrigerante) if n_circ == 2 else 0.0
+      )
+
+      stato_xl = (
+          str(row.get("Stato Lavorazione", "Da Lavorare")).strip()
+          if pd.notna(row.get("Stato Lavorazione"))
+          else "Da Lavorare"
+      )
+      if stato_xl not in ("Da Lavorare", "Completato"):
+        stato_xl = "Da Lavorare"
 
       fgasnum_val = str(row.get("fgasnum", "")).strip()
       id_unic = (
-          f"{fgasnum_val}_{nr_unita}_{matricola}"
+          f"{fgasnum_val}_{idx}"
           if fgasnum_val
-          else f"{nr_unita}_{modello}_{matricola}"
+          else f"{idx}_{nr_unita}_{matricola}"
       )
 
       cursor.execute(
           """
-                INSERT OR IGNORE INTO macchine_hvac
+                INSERT INTO macchine_hvac
                 (id_macchina, collocazione, nr_unita, marca, modello, matricola, refrigerante, tonn_co2_eq, carica_kg, codice_targa, scadenza_verifica, stato_compilazione, n_circuiti, carica_circ1, carica_circ2, co2_circ1, co2_circ2)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -447,7 +470,7 @@ def init_db():
               carica_kg,
               codice_targa,
               scadenza,
-              "Da Lavorare",
+              stato_xl,
               n_circ,
               c1_val,
               c2_val,
@@ -493,7 +516,9 @@ def genera_report_docx(
 
   doc = Document(TEMPLATE_FGAS_PATH)
   data_str = (
-      data_intervento_custom if data_intervento_custom else oggi.strftime("%d/%m/%Y")
+      data_intervento_custom
+      if data_intervento_custom
+      else oggi.strftime("%d/%m/%Y")
   )
   scadenza_str = (
       scadenza_custom if scadenza_custom else str(row["scadenza_verifica"])
@@ -971,102 +996,3 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
           st.warning(f"Salvato su DB, ma avviso Excel: {msg_xl}")
         if err_doc:
           st.error(err_doc)
-        st.rerun()
-
-  last_gen = st.session_state.get(f"last_generated_{key_id}")
-  if last_gen and os.path.exists(last_gen):
-    with open(last_gen, "rb") as f:
-      st.download_button(
-          label=f"⬇️ Scarica Rapportino ({os.path.basename(last_gen)})",
-          data=f.read(),
-          file_name=os.path.basename(last_gen),
-          mime=(
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          ),
-          key=f"dl_{key_id}",
-      )
-
-
-def main():
-  st.set_page_config(
-      page_title="Registro & Rapportini F-GAS — Castel Romano",
-      layout="wide",
-  )
-  init_db()
-
-  oggi = datetime.now()
-  st.title("Gestione Registro & Rapportini F-GAS")
-  st.caption(
-      "CBRE GWS — Castel Romano | Anno di riferimento:"
-      f" **{oggi.year}**"
-  )
-
-  conn = sqlite3.connect(DB_PATH, timeout=10.0)
-  df = pd.read_sql("SELECT * FROM macchine_hvac", conn)
-  conn.close()
-
-  tot_imm = len(df)
-  completati = (
-      int((df["stato_compilazione"] == "Completato").sum()) if not df.empty else 0
-  )
-
-  with st.sidebar:
-    st.header("Esportazione Massiva")
-    anno_zip = st.number_input(
-        "Anno rapportini mensili",
-        min_value=2020,
-        max_value=2035,
-        value=oggi.year,
-        step=1,
-    )
-    if st.button("📦 Genera ZIP Mensile"):
-      with st.spinner("Generazione rapportini in corso..."):
-        zip_bytes, n_gen, err_zip = genera_zip_mensile_anno_corrente(
-            int(anno_zip)
-        )
-      if err_zip:
-        st.error(err_zip)
-      else:
-        st.session_state["zip_mensile_bytes"] = zip_bytes
-        st.session_state["zip_mensile_count"] = n_gen
-        st.session_state["zip_mensile_anno"] = int(anno_zip)
-
-    if st.session_state.get("zip_mensile_bytes"):
-      anno_z = st.session_state.get("zip_mensile_anno", anno_zip)
-      cnt_z = st.session_state.get("zip_mensile_count", 0)
-      st.success(f"Pronti {cnt_z} rapportini ({anno_z})")
-      st.download_button(
-          label=f"⬇️ Scarica ZIP Rapportini {anno_z}",
-          data=st.session_state["zip_mensile_bytes"],
-          file_name=f"Report_FGAS_Mensili_{anno_z}.zip",
-          mime="application/zip",
-      )
-
-  ricerca = st.text_input(
-      "Cerca per Unità, Matricola, Codice Apparecchiatura (Targa), Modello o"
-      " Marca"
-  ).strip()
-
-  df_filtrato = df
-  if ricerca and not df.empty:
-    q = ricerca.lower()
-    mask = (
-        df["nr_unita"].astype(str).str.lower().str.contains(q, na=False)
-        | df["matricola"].astype(str).str.lower().str.contains(q, na=False)
-        | df["codice_targa"].astype(str).str.lower().str.contains(q, na=False)
-        | df["modello"].astype(str).str.lower().str.contains(q, na=False)
-        | df["marca"].astype(str).str.lower().str.contains(q, na=False)
-    )
-    df_filtrato = df[mask]
-
-  st.markdown(
-      f"**Impianti visualizzati: {len(df_filtrato)} / {tot_imm}** — Completati:"
-      f" **{completati}**"
-  )
-
-  for idx, (_, row) in enumerate(df_filtrato.iterrows()):
-    render_scheda_unita(row, prefix=f"u_{idx}", oggi=oggi, expanded=False)
-
-
-if __name__ == "__main__":
-  main()
