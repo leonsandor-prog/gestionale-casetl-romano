@@ -65,43 +65,123 @@ def calcola_co2_tonnellate(carica_kg: float, refrigerante: str) -> float:
     return round((float(carica_kg or 0.0) * gwp) / 1000.0, 2)
 
 
+def estrai_data_verifica_riga_excel(row) -> str:
+    """
+    Legge la data da 'Data ultima verifica' (o 'Scadenza verifica' se la prima è vuota)
+    e la restituisce come stringa 'GG/MM/AAAA'.
+    """
+    for col in ["Data ultima verifica", "Scadenza verifica", "Scadenza Verifica"]:
+        if col in row.index:
+            val = row.get(col)
+            if pd.notna(val) and str(val).strip() not in ("", "nan", "NaT", "None"):
+                if isinstance(val, (datetime, pd.Timestamp)):
+                    return val.strftime("%d/%m/%Y")
+                dt_parsed = pd.to_datetime(str(val).strip(), errors="coerce", dayfirst=False)
+                if pd.notna(dt_parsed):
+                    return dt_parsed.strftime("%d/%m/%Y")
+                return str(val).strip()
+    return ""
+
+
 def normalizza_data_anno_corrente(data_raw, anno_corrente: int):
     """
-    Mantiene giorno e mese invariati dalla scadenza e sostituisce l'anno con anno_corrente.
+    Mantiene invariati giorno e mese dalla data verifica e imposta l'anno con anno_corrente.
     Restituisce (stringa_dd_mm_yyyy, numero_mese_int, cartella_mese_str).
     """
-    s = str(data_raw or "").strip()
     dt = None
 
-    # Prova formati comuni dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d/%m/%y"):
-        try:
-            dt = datetime.strptime(s.split()[0], fmt)
-            break
-        except Exception:
-            continue
+    if isinstance(data_raw, (datetime, pd.Timestamp)) and pd.notna(data_raw):
+        dt = datetime(data_raw.year, data_raw.month, data_raw.day)
+    else:
+        s = str(data_raw or "").strip()
+        for fmt in (
+            "%d/%m/%Y",
+            "%Y-%m-%d",
+            "%d-%m-%Y",
+            "%d.%m.%Y",
+            "%Y/%m/%d",
+            "%Y-%m-%d %H:%M:%S",
+            "%d/%m/%y",
+            "%d-%m-%y",
+        ):
+            try:
+                dt = datetime.strptime(s.split()[0], fmt)
+                break
+            except Exception:
+                continue
+
+        if dt is None:
+            dt_pd = pd.to_datetime(s, errors="coerce")
+            if pd.notna(dt_pd):
+                dt = datetime(dt_pd.year, dt_pd.month, dt_pd.day)
 
     if dt is None:
-        m = re.search(r"(\d{1,2})[/\-.](\d{1,2})", s)
-        if m:
-            giorno = int(m.group(1))
-            mese = int(m.group(2))
-            try:
-                dt = datetime(anno_corrente, mese, giorno)
-            except ValueError:
-                dt = datetime(anno_corrente, 4, 14)
-        else:
-            dt = datetime(anno_corrente, 4, 14)
+        return "", None, None
 
     try:
         dt_corrente = dt.replace(year=anno_corrente)
     except ValueError:
-        # Gestione 29 febbraio su anno non bisestile
         dt_corrente = dt.replace(year=anno_corrente, day=28)
 
     mese_num = dt_corrente.month
     cartella_mese = MESI_ITALIANI.get(mese_num, f"{mese_num:02d}_Mese")
     return dt_corrente.strftime("%d/%m/%Y"), mese_num, cartella_mese
+
+
+def sincronizza_date_da_excel():
+    """
+    Legge le date reali ('Data ultima verifica' / 'Scadenza verifica') dall'Excel
+    e aggiorna scadenza_verifica nel DB SQLite per ogni unità.
+    """
+    if not os.path.exists(EXCEL_PATH):
+        return
+
+    try:
+        xls = pd.ExcelFile(EXCEL_PATH)
+        df_xl = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+
+        col_unita = next(
+            (c for c in ["Descrizione", "Unità / Macchina", "Unità", "nr_unita"] if c in df_xl.columns),
+            None,
+        )
+        col_matr = next((c for c in ["Matricola", "matricola"] if c in df_xl.columns), None)
+        col_targa = next(
+            (c for c in ["Cod. Apparecchiatura", "Codice Targa", "codice_targa"] if c in df_xl.columns),
+            None,
+        )
+
+        conn = sqlite3.connect(DB_PATH, timeout=10.0)
+        cur = conn.cursor()
+
+        for _, r in df_xl.iterrows():
+            data_str = estrai_data_verifica_riga_excel(r)
+            if not data_str:
+                continue
+
+            unita_v = str(r.get(col_unita, "")).strip() if col_unita and pd.notna(r.get(col_unita)) else ""
+            matr_v = str(r.get(col_matr, "")).strip() if col_matr and pd.notna(r.get(col_matr)) else ""
+            targa_v = str(r.get(col_targa, "")).strip() if col_targa and pd.notna(r.get(col_targa)) else ""
+
+            if unita_v and matr_v:
+                cur.execute(
+                    "UPDATE macchine_hvac SET scadenza_verifica = ? WHERE TRIM(nr_unita) = ? AND TRIM(matricola) = ?",
+                    (data_str, unita_v, matr_v),
+                )
+            elif targa_v and targa_v != "GF":
+                cur.execute(
+                    "UPDATE macchine_hvac SET scadenza_verifica = ? WHERE TRIM(codice_targa) = ?",
+                    (data_str, targa_v),
+                )
+            elif unita_v:
+                cur.execute(
+                    "UPDATE macchine_hvac SET scadenza_verifica = ? WHERE TRIM(nr_unita) = ?",
+                    (data_str, unita_v),
+                )
+
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def salva_su_excel(
@@ -128,7 +208,7 @@ def salva_su_excel(
         df_xl = pd.read_excel(xls, sheet_name=foglio)
 
         col_unita = next(
-            (c for c in ["Unità / Macchina", "Unità", "Descrizione", "nr_unita"] if c in df_xl.columns),
+            (c for c in ["Descrizione", "Unità / Macchina", "Unità", "nr_unita"] if c in df_xl.columns),
             None,
         )
         col_matr = next((c for c in ["Matricola", "matricola"] if c in df_xl.columns), None)
@@ -136,17 +216,19 @@ def salva_su_excel(
             (c for c in ["Cod. Apparecchiatura", "Codice Targa", "codice_targa"] if c in df_xl.columns),
             None,
         )
+        col_gas = "Tipo HCFC" if "Tipo HCFC" in df_xl.columns else "Refrigerante"
+        col_ncirc = "N° Circuiti" if "N° Circuiti" in df_xl.columns else "N_Circuiti"
 
         mask = pd.Series([False] * len(df_xl))
         if col_unita and str(row_data["nr_unita"]).strip():
             mask = mask | (df_xl[col_unita].astype(str).str.strip() == str(row_data["nr_unita"]).strip())
         if col_matr and str(row_data["matricola"]).strip():
             mask = mask | (df_xl[col_matr].astype(str).str.strip() == str(row_data["matricola"]).strip())
-        if col_targa and str(row_data["codice_targa"]).strip():
+        if col_targa and str(row_data["codice_targa"]).strip() and str(row_data["codice_targa"]).strip() != "GF":
             mask = mask | (df_xl[col_targa].astype(str).str.strip() == str(row_data["codice_targa"]).strip())
 
         aggiornamenti = {
-            "N_Circuiti": int(n_circ),
+            col_ncirc: int(n_circ),
             "Carica_Circ_1_Kg": round(float(c1_kg), 2),
             "Carica_Circ_2_Kg": round(float(c2_kg), 2) if n_circ == 2 else 0.0,
             "CO2_Circ_1_T": round(float(co2_c1), 2),
@@ -155,7 +237,7 @@ def salva_su_excel(
             "Tonn CO2 Eq": round(float(co2_tot), 2),
             "Modello": mod_val,
             "Matricola": matr_val,
-            "Refrigerante": gas_val,
+            col_gas: gas_val,
             "Cod. Apparecchiatura": targa_val,
             "Stato Lavorazione": stato_val,
         }
@@ -221,11 +303,15 @@ def init_db():
 
         for _, row in df_excel.iterrows():
             collocazione = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
-            nr_unita = str(row.get("Unità / Macchina", row.get("Unità", row.get("Descrizione", "")))).strip()
+            nr_unita = str(row.get("Descrizione", row.get("Unità / Macchina", row.get("Unità", "")))).strip()
             marca = str(row.get("Marca", "")).strip()
             modello = str(row.get("Modello", "")).strip()
-            matricola = str(row.get("Matricola", modello)).strip()
-            refrigerante = str(row.get("Refrigerante", row.get("Tipo Gas", "R-410A"))).strip()
+            matricola = str(row.get("Matricola", modello) if pd.notna(row.get("Matricola")) else modello).strip()
+            refrigerante = str(
+                row.get("Tipo HCFC", row.get("Refrigerante", row.get("Tipo Gas", "R-410A")))
+                if pd.notna(row.get("Tipo HCFC", row.get("Refrigerante", "R-410A")))
+                else "R-410A"
+            ).strip()
             tonn_co2 = float(
                 row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0))
                 if pd.notna(row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", 0.0)))
@@ -242,10 +328,13 @@ def init_db():
                 tonn_co2 = calcola_co2_tonnellate(carica_kg, refrigerante)
 
             codice_targa = str(row.get("Cod. Apparecchiatura", row.get("Codice Targa", ""))).strip()
-            scadenza = str(row.get("Scadenza Verifica", "14/04/2027")).strip()
+            scadenza = estrai_data_verifica_riga_excel(row)
 
-            raw_ncirc = row.get("N_Circuiti", 1)
-            n_circ = 2 if pd.notna(raw_ncirc) and int(float(raw_ncirc)) == 2 else 1
+            raw_ncirc = row.get("N° Circuiti", row.get("N_Circuiti", 1))
+            try:
+                n_circ = 2 if pd.notna(raw_ncirc) and int(float(str(raw_ncirc).strip())) == 2 else 1
+            except Exception:
+                n_circ = 1
 
             c1_val = float(
                 row.get("Carica_Circ_1_Kg", carica_kg / 2 if n_circ == 2 else carica_kg)
@@ -260,7 +349,8 @@ def init_db():
             co2_1_val = calcola_co2_tonnellate(c1_val, refrigerante)
             co2_2_val = calcola_co2_tonnellate(c2_val, refrigerante) if n_circ == 2 else 0.0
 
-            id_unic = f"{nr_unita}_{modello}_{matricola}"
+            fgasnum_val = str(row.get("fgasnum", "")).strip()
+            id_unic = f"{fgasnum_val}_{nr_unita}_{matricola}" if fgasnum_val else f"{nr_unita}_{modello}_{matricola}"
 
             cursor.execute(
                 """
@@ -291,6 +381,7 @@ def init_db():
 
     conn.commit()
     conn.close()
+    sincronizza_date_da_excel()
 
 
 def _inserisci_firma_in_cella(cell, firma_path: str):
@@ -394,19 +485,25 @@ def genera_report_docx(
 
 def genera_zip_mensile_anno_corrente(anno_corrente: int):
     """
-    Genera tutti i rapportini F-GAS aggiornati dal DB/Excel, impostando
-    l'anno corrente (mantenendo invariati giorno e mese della scadenza),
-    li divide in sottocartelle per mese e crea uno ZIP scaricabile in memoria.
+    Legge direttamente il foglio Excel aggiornato ('Elenco di FGAS'), mantiene
+    invariati giorno e mese di 'Data ultima verifica' / 'Scadenza verifica'
+    sostituendo solo l'anno con anno_corrente, genera i rapportini per le unità
+    F-Gas attive ('F-Gas?' == 'S') divisi per mese e crea uno ZIP scaricabile.
     """
     if not os.path.exists(TEMPLATE_FGAS_PATH):
         return None, 0, "Template Word non trovato."
 
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    df_all = pd.read_sql("SELECT * FROM macchine_hvac", conn)
-    conn.close()
+    if not os.path.exists(EXCEL_PATH):
+        return None, 0, "File Excel non trovato."
 
-    if df_all.empty:
-        return None, 0, "Nessuna macchina presente nel database."
+    sincronizza_date_da_excel()
+
+    xls = pd.ExcelFile(EXCEL_PATH)
+    df_xl = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    df_db = pd.read_sql("SELECT * FROM macchine_hvac", conn)
+    conn.close()
 
     base_batch_dir = os.path.join(OUTPUT_DIR, f"Batch_Mensile_{anno_corrente}")
     os.makedirs(base_batch_dir, exist_ok=True)
@@ -416,29 +513,78 @@ def genera_zip_mensile_anno_corrente(anno_corrente: int):
     tot_generati = 0
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for _, row in df_all.iterrows():
-            data_corr_str, _, cartella_mese = normalizza_data_anno_corrente(
-                row.get("scadenza_verifica"), anno_corrente
-            )
+        for _, r_xl in df_xl.iterrows():
+            fgas_flag = str(r_xl.get("F-Gas?", "S")).strip().upper()
+            if fgas_flag == "N":
+                continue
 
-            n_circ = 2 if pd.notna(row.get("n_circuiti")) and int(row.get("n_circuiti")) == 2 else 1
-            carica_tot = float(row.get("carica_kg") or 0.0)
-            c1 = float(row.get("carica_circ1") or (carica_tot / 2.0 if n_circ == 2 else carica_tot))
-            c2 = float(row.get("carica_circ2") or (carica_tot / 2.0 if n_circ == 2 else 0.0))
+            desc_unita = str(r_xl.get("Descrizione", r_xl.get("Unità / Macchina", ""))).strip()
+            if any(k in desc_unita.upper() for k in ["DISMESS", "NON INDIVIDUATA", "DOPP."]):
+                continue
 
-            gas = str(row.get("refrigerante") or "R-410A").strip()
+            data_orig = estrai_data_verifica_riga_excel(r_xl)
+            data_corr_str, _, cartella_mese = normalizza_data_anno_corrente(data_orig, anno_corrente)
+            if not data_corr_str or not cartella_mese:
+                continue
+
+            matr_xl = str(r_xl.get("Matricola", "") if pd.notna(r_xl.get("Matricola")) else "").strip()
+            targa_xl = str(r_xl.get("Cod. Apparecchiatura", "") if pd.notna(r_xl.get("Cod. Apparecchiatura")) else "").strip()
+
+            # Recupera eventuali dati aggiornati nel DB (es. circuiti, cariche modificate in campo)
+            match_db = pd.DataFrame()
+            if not df_db.empty:
+                if desc_unita and matr_xl:
+                    match_db = df_db[
+                        (df_db["nr_unita"].astype(str).str.strip() == desc_unita)
+                        & (df_db["matricola"].astype(str).str.strip() == matr_xl)
+                    ]
+                if match_db.empty and targa_xl and targa_xl != "GF":
+                    match_db = df_db[df_db["codice_targa"].astype(str).str.strip() == targa_xl]
+
+            gas = str(
+                r_xl.get("Tipo HCFC", r_xl.get("Refrigerante", "R-410A"))
+                if pd.notna(r_xl.get("Tipo HCFC", r_xl.get("Refrigerante", "R-410A")))
+                else "R-410A"
+            ).strip()
+
+            carica_xl = float(r_xl.get("Carica Refrigerante (kg)") or 0.0) if pd.notna(r_xl.get("Carica Refrigerante (kg)")) else 0.0
+            raw_nc = r_xl.get("N° Circuiti", r_xl.get("N_Circuiti", 1))
+            try:
+                n_circ = 2 if pd.notna(raw_nc) and int(float(str(raw_nc).strip())) == 2 else 1
+            except Exception:
+                n_circ = 1
+
+            c1 = float(r_xl.get("Carica_Circ_1_Kg")) if pd.notna(r_xl.get("Carica_Circ_1_Kg")) else (carica_xl / 2.0 if n_circ == 2 else carica_xl)
+            c2 = float(r_xl.get("Carica_Circ_2_Kg")) if pd.notna(r_xl.get("Carica_Circ_2_Kg")) else (carica_xl / 2.0 if n_circ == 2 else 0.0)
+
+            if not match_db.empty:
+                db_r = match_db.iloc[0]
+                n_circ = 2 if pd.notna(db_r.get("n_circuiti")) and int(db_r.get("n_circuiti")) == 2 else n_circ
+                if float(db_r.get("carica_circ1") or 0.0) > 0:
+                    c1 = float(db_r.get("carica_circ1"))
+                    c2 = float(db_r.get("carica_circ2") or 0.0)
+                if pd.notna(db_r.get("refrigerante")) and str(db_r.get("refrigerante")).strip():
+                    gas = str(db_r.get("refrigerante")).strip()
+
             co2_1 = calcola_co2_tonnellate(c1, gas)
             co2_2 = calcola_co2_tonnellate(c2, gas) if n_circ == 2 else 0.0
             co2_tot = round(co2_1 + co2_2, 2)
 
+            row_payload = {
+                "nr_unita": desc_unita,
+                "marca": str(r_xl.get("Marca", "") if pd.notna(r_xl.get("Marca")) else "").strip(),
+                "scadenza_verifica": data_corr_str,
+            }
+            mod_val = str(r_xl.get("Modello", "") if pd.notna(r_xl.get("Modello")) else "").strip()
+
             mese_dir = os.path.join(base_batch_dir, cartella_mese)
-            out_file, err = genera_report_docx(
-                row=row,
-                mod_edit=str(row.get("modello") or ""),
-                matr_edit=str(row.get("matricola") or ""),
+            out_file, _ = genera_report_docx(
+                row=row_payload,
+                mod_edit=mod_val,
+                matr_edit=matr_xl,
                 gas_edit=gas,
-                targa_edit=str(row.get("codice_targa") or ""),
-                stato_edit=str(row.get("stato_compilazione") or "Completato"),
+                targa_edit=targa_xl,
+                stato_edit="Completato",
                 n_circ_edit=n_circ,
                 c1_edit=c1,
                 c2_edit=c2,
@@ -453,8 +599,13 @@ def genera_zip_mensile_anno_corrente(anno_corrente: int):
             )
 
             if out_file and os.path.exists(out_file):
-                arcname = os.path.join(cartella_mese, os.path.basename(out_file))
-                zf.write(out_file, arcname=arcname)
+                fgas_id = str(r_xl.get("fgasnum", "")).strip()
+                arc_name = (
+                    f"{fgas_id}_{os.path.basename(out_file)}"
+                    if fgas_id
+                    else os.path.basename(out_file)
+                )
+                zf.write(out_file, arcname=os.path.join(cartella_mese, arc_name))
                 tot_generati += 1
 
     zip_buffer.seek(0)
@@ -470,9 +621,12 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
     carica_db = float(row.get("carica_kg") or 0.0)
     c1_db = float(row.get("carica_circ1") or (carica_db / 2 if n_circ_db == 2 else carica_db))
     c2_db = float(row.get("carica_circ2") or (carica_db / 2 if n_circ_db == 2 else 0.0))
+    data_valida_str, _, _ = normalizza_data_anno_corrente(row.get("scadenza_verifica"), oggi.year)
+    if not data_valida_str:
+        data_valida_str = oggi.strftime("%d/%m/%Y")
 
     with st.expander(
-        f"{pallino} Unità {row['nr_unita']} — {row['marca']} {row['modello']} | Circuiti: `{n_circ_db}` | Targa: `{row['codice_targa']}` | Matr: `{row['matricola']}`",
+        f"{pallino} Unità {row['nr_unita']} — {row['marca']} {row['modello']} | Circuiti: `{n_circ_db}` | Data Verifica: `{data_valida_str}` | Targa: `{row['codice_targa']}`",
         expanded=expanded,
     ):
         c1, c2 = st.columns(2)
@@ -481,6 +635,7 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
             st.write(f"- **Collocazione:** `{row['collocazione']}`")
             st.write(f"- **Matricola:** `{row['matricola']}`")
             st.write(f"- **Cod. Apparecchiatura:** `{row['codice_targa']}`")
+            st.write(f"- **Data Verifica (Anno Corrente):** `{data_valida_str}`")
             st.write(f"- **N° Circuiti registrati:** `{n_circ_db}`")
         with c2:
             st.markdown("**Parametri F-GAS**")
@@ -642,6 +797,8 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
                     carica_tot_calc,
                     co2_tot_calc,
                     oggi,
+                    data_intervento_custom=data_valida_str,
+                    scadenza_custom=data_valida_str,
                 )
                 if out_file:
                     st.session_state[f"last_generated_{key_id}"] = out_file
@@ -689,7 +846,7 @@ menu = st.sidebar.radio("Sezione:", ["Dashboard & Impianti", "Scan Targhetta (Fo
 st.sidebar.divider()
 st.sidebar.markdown("### 📦 Esportazione Massiva")
 if st.sidebar.button("📦 Genera Tutti i Rapportini per Mese (Anno Corrente)"):
-    with st.spinner("Generazione rapportini divisi per mese in corso..."):
+    with st.spinner("Lettura date verifica Excel e generazione rapportini per mese..."):
         zip_bytes, count_doc, err_zip = genera_zip_mensile_anno_corrente(anno_corrente)
         if err_zip:
             st.sidebar.error(err_zip)
@@ -713,7 +870,7 @@ if menu == "Dashboard & Impianti":
     col_exp1, col_exp2 = st.columns([1, 1])
     with col_exp1:
         if st.button("📦 Genera Tutti i Rapportini Divisi per Mese (ZIP Anno Corrente)", key="btn_zip_main"):
-            with st.spinner("Creazione pacchetto mensile in corso..."):
+            with st.spinner("Lettura date verifica Excel e creazione pacchetto mensile..."):
                 zip_bytes, count_doc, err_zip = genera_zip_mensile_anno_corrente(anno_corrente)
                 if err_zip:
                     st.error(err_zip)
