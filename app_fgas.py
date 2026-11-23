@@ -346,3 +346,582 @@ def salva_su_excel(
             "n_circuiti": int(n_circuiti),
             "carica_circ1": round(float(c1_kg), 2),
             "carica_circ2": round(float(c2_kg),
+cat << 'EOF' >> app_fgas.py
+            "carica_circ2": round(float(c2_kg), 2),
+            "co2_circ1": round(float(co2_c1), 2),
+            "co2_circ2": round(float(co2_c2), 2),
+        }
+
+        for field_name, val in updates.items():
+            col_found = _trova_colonna(df.columns, [field_name])
+            if col_found:
+                if df[col_found].dtype == object:
+                    df.loc[mask, col_found] = str(val) if isinstance(val, str) else val
+                else:
+                    df.loc[mask, col_found] = val
+
+        df.to_excel(EXCEL_PATH, index=False)
+        return True, f"Aggiornato {EXCEL_PATH}"
+    except Exception as e:
+        return False, f"Errore scrittura Excel: {e}"
+
+
+def _sostituisci_placeholder_in_testo(testo, mapping):
+    for k, v in mapping.items():
+        testo = testo.replace(f"{{{{{k}}}}}", str(v))
+        testo = testo.replace(f"{{{k}}}", str(v))
+    return testo
+
+
+def _popola_documento_docx(doc, mapping):
+    for p in doc.paragraphs:
+        if "{" in p.text:
+            nuovo = _sostituisci_placeholder_in_testo(p.text, mapping)
+            if nuovo != p.text:
+                p.text = nuovo
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    if "{" in p.text:
+                        nuovo = _sostituisci_placeholder_in_testo(p.text, mapping)
+                        if nuovo != p.text:
+                            p.text = nuovo
+
+
+def genera_report_docx(
+    row,
+    modello,
+    matricola,
+    refrigerante,
+    codice_targa,
+    stato_compilazione,
+    n_circuiti,
+    c1_kg,
+    c2_kg,
+    co2_c1,
+    co2_c2,
+    carica_tot,
+    co2_tot,
+    oggi,
+    data_intervento_custom=None,
+    scadenza_custom=None,
+):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    data_int = data_intervento_custom or oggi.strftime("%d/%m/%Y")
+    scad_str = scadenza_custom or data_int
+
+    mapping = {
+        "ID_MACCHINA": row.get("id_macchina", ""),
+        "NR_UNITA": row.get("nr_unita", ""),
+        "MARCA": row.get("marca", ""),
+        "MODELLO": modello,
+        "MATRICOLA": matricola,
+        "COLLOCAZIONE": row.get("collocazione", ""),
+        "CODICE_TARGA": codice_targa,
+        "REFRIGERANTE": refrigerante,
+        "N_CIRCUITI": str(n_circuiti),
+        "CARICA_CIRC1": f"{float(c1_kg):.2f}",
+        "CARICA_CIRC2": f"{float(c2_kg):.2f}",
+        "CO2_CIRC1": f"{float(co2_c1):.2f}",
+        "CO2_CIRC2": f"{float(co2_c2):.2f}",
+        "CARICA_TOTALE": f"{float(carica_tot):.2f}",
+        "CO2_TOTALE": f"{float(co2_tot):.2f}",
+        "STATO": stato_compilazione,
+        "DATA_INTERVENTO": data_int,
+        "SCADENZA_VERIFICA": scad_str,
+        "GWP": f"{get_gwp(refrigerante):.0f}",
+    }
+
+    try:
+        if os.path.exists(TEMPLATE_FGAS_PATH):
+            doc = Document(TEMPLATE_FGAS_PATH)
+            _popola_documento_docx(doc, mapping)
+        else:
+            doc = Document()
+            doc.add_heading("RAPPORTINO DI VERIFICA IMPIANTO F-GAS", level=1)
+            doc.add_paragraph(f"Data intervento: {data_int} | Stato: {stato_compilazione}")
+            doc.add_paragraph(
+                f"Unità: {row.get('nr_unita', '')} — {row.get('marca', '')} {modello} | "
+                f"Matricola: {matricola} | Targa: {codice_targa}"
+            )
+            doc.add_paragraph(f"Collocazione: {row.get('collocazione', '')}")
+            doc.add_paragraph(
+                f"Refrigerante: {refrigerante} (GWP {get_gwp(refrigerante):.0f}) | "
+                f"Circuiti: {n_circuiti}"
+            )
+            doc.add_paragraph(
+                f"Circuito 1: {float(c1_kg):.2f} kg ({float(co2_c1):.2f} t CO2 eq) | "
+                f"Circuito 2: {float(c2_kg):.2f} kg ({float(co2_c2):.2f} t CO2 eq)"
+            )
+            doc.add_paragraph(
+                f"Totale Carica: {float(carica_tot):.2f} kg | "
+                f"Totale CO2 Eq: {float(co2_tot):.2f} t"
+            )
+
+        if os.path.exists(FIRMA_PATH):
+            try:
+                with Image.open(FIRMA_PATH) as im:
+                    im.verify()
+                doc.add_paragraph("Firma Tecnico F-GAS:")
+                doc.add_picture(FIRMA_PATH, width=Inches(1.8))
+            except Exception as e_img:
+                doc.add_paragraph(f"Firma Tecnico F-GAS: [Avviso immagine firma: {e_img}]")
+
+        nome_file = (
+            f"Rapportino_FGAS_Unita_{sanitize_filename(row.get('nr_unita', 'X'))}_"
+            f"{sanitize_filename(row.get('id_macchina', 'ID'))}_{oggi.strftime('%Y%m%d')}.docx"
+        )
+        out_path = os.path.join(OUTPUT_DIR, nome_file)
+        doc.save(out_path)
+        return out_path, None
+    except Exception as e:
+        return None, f"Errore generazione rapportino .docx: {e}"
+
+
+def genera_zip_mensile_anno_corrente(macchine, oggi):
+    anno = oggi.year
+    buf = io.BytesIO()
+    conteggio = 0
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for r in macchine:
+            data_str, mese, _ = normalizza_data_anno_corrente(
+                r.get("scadenza_verifica"), anno
+            )
+            if not mese:
+                mese = oggi.month
+                data_str = oggi.strftime("%d/%m/%Y")
+
+            nome_mese = MESI_IT.get(mese, f"Mese_{mese:02d}")
+            n_circ = 2 if int(_safe_float(r.get("n_circuiti"), 1)) == 2 else 1
+            carica = _safe_float(r.get("carica_kg"), 0.0)
+            co2 = _safe_float(r.get("tonn_co2_eq"), calcola_co2_tonnellate(carica, r.get("refrigerante")))
+            c1 = _safe_float(r.get("carica_circ1"), carica / 2.0 if n_circ == 2 else carica)
+            c2 = _safe_float(r.get("carica_circ2"), carica / 2.0 if n_circ == 2 else 0.0)
+            co2_1 = _safe_float(r.get("co2_circ1"), calcola_co2_tonnellate(c1, r.get("refrigerante")))
+            co2_2 = _safe_float(r.get("co2_circ2"), calcola_co2_tonnellate(c2, r.get("refrigerante")))
+
+            out_path, err = genera_report_docx(
+                r,
+                r.get("modello", ""),
+                r.get("matricola", ""),
+                r.get("refrigerante", "R-410A"),
+                r.get("codice_targa", ""),
+                r.get("stato_compilazione", "Da Lavorare"),
+                n_circ,
+                c1,
+                c2,
+                co2_1,
+                co2_2,
+                carica,
+                co2,
+                oggi,
+                data_intervento_custom=data_str,
+                scadenza_custom=data_str,
+            )
+            if out_path and os.path.exists(out_path) and not err:
+                arcname = f"{anno}_{mese:02d}_{nome_mese}/{os.path.basename(out_path)}"
+                zf.write(out_path, arcname=arcname)
+                conteggio += 1
+
+    buf.seek(0)
+    return buf.getvalue(), conteggio
+
+
+def render_scheda_unita(row, prefix, oggi, expanded=False):
+    key_id = f"{prefix}_{sanitize_filename(row['id_macchina'])}"
+    stato = row["stato_compilazione"]
+    pallino = "🟢" if stato == "Completato" else "🟡"
+
+    n_circ_db = 2 if int(_safe_float(row.get("n_circuiti"), 1)) == 2 else 1
+    carica_db = _safe_float(row.get("carica_kg"), 0.0)
+    co2_db = _safe_float(row.get("tonn_co2_eq"), 0.0)
+    c1_db = _safe_float(
+        row.get("carica_circ1"),
+        carica_db / 2.0 if n_circ_db == 2 else carica_db,
+    )
+    c2_db = _safe_float(
+        row.get("carica_circ2"), carica_db / 2.0 if n_circ_db == 2 else 0.0
+    )
+    data_valida_str, _, _ = normalizza_data_anno_corrente(
+        row.get("scadenza_verifica"), oggi.year
+    )
+    if not data_valida_str:
+        data_valida_str = oggi.strftime("%d/%m/%Y")
+
+    with st.expander(
+        f"{pallino} Unità {row['nr_unita']} — {row['marca']} {row['modello']} |"
+        f" Circuiti: `{n_circ_db}` | Data Verifica: `{data_valida_str}` |"
+        f" Targa: `{row['codice_targa']}`",
+        expanded=expanded,
+    ):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Dati Impianto & Identificativi**")
+            st.write(f"- **Collocazione:** `{row['collocazione']}`")
+            st.write(f"- **Matricola:** `{row['matricola']}`")
+            st.write(f"- **Cod. Apparecchiatura:** `{row['codice_targa']}`")
+            st.write(f"- **Data Verifica (Anno Corrente):** `{data_valida_str}`")
+            st.write(f"- **N° Circuiti registrati:** `{n_circ_db}`")
+        with c2:
+            st.markdown("**Parametri F-GAS**")
+            st.write(f"- **Refrigerante:** `{row['refrigerante']}`")
+            st.write(f"- **Carica Totale:** `{carica_db:.2f} kg`")
+            st.write(f"- **Tonn. CO2 Eq Totale:** `{co2_db:.2f} t`")
+
+        st.divider()
+
+        n_circ_edit = st.selectbox(
+            "Numero circuiti impianto (1 = singolo, 2 = doppio circuito)",
+            options=[1, 2],
+            index=1 if n_circ_db == 2 else 0,
+            key=f"ncirc_{key_id}",
+        )
+
+        state_key_nc = f"last_ncirc_{key_id}"
+        if st.session_state.get(state_key_nc) != n_circ_edit:
+            if n_circ_edit == 2:
+                if c2_db > 0:
+                    val_c1 = round(c1_db, 2)
+                    val_c2 = round(c2_db, 2)
+                else:
+                    meta = round(carica_db / 2.0, 2)
+                    val_c1 = meta
+                    val_c2 = round(carica_db - meta, 2)
+            else:
+                val_c1 = round(carica_db, 2)
+                val_c2 = 0.0
+
+            st.session_state[f"c1_val_{key_id}"] = val_c1
+            st.session_state[f"c2_val_{key_id}"] = val_c2
+            st.session_state[f"in_c1_{key_id}"] = float(val_c1)
+            st.session_state[f"in_c2_{key_id}"] = float(val_c2)
+            st.session_state[state_key_nc] = n_circ_edit
+
+        with st.form(key=f"form_{key_id}"):
+            st.markdown("##### ✏️ Verifica e Modifica Dati in Campo")
+            nc1, nc2, nc3 = st.columns(3)
+            with nc1:
+                mod_edit = st.text_input(
+                    "Modello", value=str(row["modello"]), key=f"mod_{key_id}"
+                )
+                matr_edit = st.text_input(
+                    "Matricola",
+                    value=str(row["matricola"]),
+                    key=f"matr_{key_id}",
+                )
+            with nc2:
+                gas_lista = [
+                    "R-410A",
+                    "R-407C",
+                    "R-32",
+                    "R-134a",
+                    "R-449A",
+                    "R-404A",
+                    "R-507A",
+                ]
+                idx_gas = (
+                    gas_lista.index(row["refrigerante"])
+                    if row["refrigerante"] in gas_lista
+                    else 0
+                )
+                gas_edit = st.selectbox(
+                    "Refrigerante",
+                    gas_lista,
+                    index=idx_gas,
+                    key=f"gas_{key_id}",
+                )
+                targa_edit = st.text_input(
+                    "Codice Apparecchiatura (Targa)",
+                    value=str(row["codice_targa"]),
+                    key=f"targa_{key_id}",
+                )
+            with nc3:
+                stato_edit = st.selectbox(
+                    "Stato Lavorazione",
+                    ["Da Lavorare", "Completato"],
+                    index=0 if stato == "Da Lavorare" else 1,
+                    key=f"st_{key_id}",
+                )
+                st.caption(
+                    f"GWP applicato ({gas_edit}): **{get_gwp(gas_edit):.0f}**"
+                )
+
+            st.markdown(
+                "**Carica Refrigerante per Circuito e Calcolo Automatico"
+                " Tonn. CO2 Eq**"
+            )
+            if n_circ_edit == 2:
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    c1_edit = st.number_input(
+                        "Carica Circuito 1 (kg)",
+                        min_value=0.0,
+                        step=0.1,
+                        format="%.2f",
+                        value=float(
+                            st.session_state.get(f"c1_val_{key_id}", c1_db)
+                        ),
+                        key=f"in_c1_{key_id}",
+                    )
+                    co2_c1_calc = calcola_co2_tonnellate(c1_edit, gas_edit)
+                    st.info(f"Tonn. CO2 Eq Circuito 1: **{co2_c1_calc:.2f} t**")
+                with cc2:
+                    c2_edit = st.number_input(
+                        "Carica Circuito 2 (kg)",
+                        min_value=0.0,
+                        step=0.1,
+                        format="%.2f",
+                        value=float(
+                            st.session_state.get(f"c2_val_{key_id}", c2_db)
+                        ),
+                        key=f"in_c2_{key_id}",
+                    )
+                    co2_c2_calc = calcola_co2_tonnellate(c2_edit, gas_edit)
+                    st.info(f"Tonn. CO2 Eq Circuito 2: **{co2_c2_calc:.2f} t**")
+            else:
+                c1_edit = st.number_input(
+                    "Carica Circuito 1 (kg)",
+                    min_value=0.0,
+                    step=0.1,
+                    format="%.2f",
+                    value=float(
+                        st.session_state.get(f"c1_val_{key_id}", carica_db)
+                    ),
+                    key=f"in_c1_{key_id}",
+                )
+                c2_edit = 0.0
+                co2_c1_calc = calcola_co2_tonnellate(c1_edit, gas_edit)
+                co2_c2_calc = 0.0
+                st.info(f"Tonn. CO2 Eq Circuito 1: **{co2_c1_calc:.2f} t**")
+
+            carica_tot_calc = round(float(c1_edit) + float(c2_edit), 2)
+            co2_tot_calc = round(float(co2_c1_calc) + float(co2_c2_calc), 2)
+            st.markdown(
+                "**Riepilogo automatico:** Carica Totale ="
+                f" **`{carica_tot_calc:.2f} kg`** | Tonn. CO2 Eq Totale ="
+                f" **`{co2_tot_calc:.2f} t`**"
+            )
+
+            btn_aggiorna = st.form_submit_button(
+                "💾 Salva su DB & Excel + Genera Rapportino F-GAS (Firmato)"
+            )
+
+            if btn_aggiorna:
+                st.session_state[f"c1_val_{key_id}"] = float(c1_edit)
+                st.session_state[f"c2_val_{key_id}"] = float(c2_edit)
+
+                conn_up = sqlite3.connect(DB_PATH, timeout=10.0)
+                cur_up = conn_up.cursor()
+                cur_up.execute(
+                    """
+                    UPDATE macchine_hvac
+                    SET modello = ?, matricola = ?, refrigerante = ?, carica_kg = ?, tonn_co2_eq = ?, codice_targa = ?, stato_compilazione = ?,
+                        n_circuiti = ?, carica_circ1 = ?, carica_circ2 = ?, co2_circ1 = ?, co2_circ2 = ?
+                    WHERE id_macchina = ?
+                    """,
+                    (
+                        mod_edit,
+                        matr_edit,
+                        gas_edit,
+                        carica_tot_calc,
+                        co2_tot_calc,
+                        targa_edit,
+                        stato_edit,
+                        int(n_circ_edit),
+                        float(c1_edit),
+                        float(c2_edit),
+                        float(co2_c1_calc),
+                        float(co2_c2_calc),
+                        row["id_macchina"],
+                    ),
+                )
+                conn_up.commit()
+                conn_up.close()
+
+                ok_xl, msg_xl = salva_su_excel(
+                    dict(row),
+                    int(n_circ_edit),
+                    c1_edit,
+                    c2_edit,
+                    co2_c1_calc,
+                    co2_c2_calc,
+                    carica_tot_calc,
+                    co2_tot_calc,
+                    mod_edit,
+                    matr_edit,
+                    gas_edit,
+                    targa_edit,
+                    stato_edit,
+                )
+
+                out_file, err_doc = genera_report_docx(
+                    row,
+                    mod_edit,
+                    matr_edit,
+                    gas_edit,
+                    targa_edit,
+                    stato_edit,
+                    int(n_circ_edit),
+                    c1_edit,
+                    c2_edit,
+                    co2_c1_calc,
+                    co2_c2_calc,
+                    carica_tot_calc,
+                    co2_tot_calc,
+                    oggi,
+                    data_intervento_custom=data_valida_str,
+                    scadenza_custom=data_valida_str,
+                )
+                if out_file:
+                    st.session_state[f"last_generated_{key_id}"] = out_file
+
+                if ok_xl:
+                    st.success(
+                        f"Salvato su DB e Excel ({msg_xl}) — Rapportino"
+                        " generato!"
+                    )
+                else:
+                    st.warning(f"Salvato su DB, ma avviso Excel: {msg_xl}")
+                if err_doc:
+                    st.error(err_doc)
+
+        ultimo_docx = st.session_state.get(f"last_generated_{key_id}")
+        if ultimo_docx and os.path.exists(ultimo_docx):
+            with open(ultimo_docx, "rb") as f_docx:
+                st.download_button(
+                    label="⬇️ Scarica Rapportino .docx generato",
+                    data=f_docx.read(),
+                    file_name=os.path.basename(ultimo_docx),
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ),
+                    key=f"dl_{key_id}",
+                )
+
+
+def main():
+    st.set_page_config(
+        page_title="Registro & Rapportini F-GAS",
+        page_icon="❄️",
+        layout="wide",
+    )
+
+    init_db()
+    oggi = datetime.now()
+
+    st.title("Registro & Rapportini F-GAS")
+    st.caption(
+        f"Anno di riferimento: **{oggi.year}** | Database: `{DB_PATH}` | "
+        f"Excel: `{EXCEL_PATH}`"
+    )
+
+    macchine = carica_macchine()
+
+    if st.button(
+        f"📦 Genera Tutti i Rapportini Divisi per Mese (ZIP {oggi.year})",
+        key="btn_zip_mensile",
+    ):
+        with st.spinner("Generazione archivio ZIP mensile in corso..."):
+            zip_bytes, n_file = genera_zip_mensile_anno_corrente(macchine, oggi)
+            st.session_state["zip_mensile_bytes"] = zip_bytes
+            st.session_state["zip_mensile_count"] = n_file
+
+    if st.session_state.get("zip_mensile_bytes"):
+        st.download_button(
+            label=(
+                f"⬇️ Scarica ZIP Rapportini {oggi.year} "
+                f"({st.session_state.get('zip_mensile_count', 0)} file)"
+            ),
+            data=st.session_state["zip_mensile_bytes"],
+            file_name=f"Rapportini_FGAS_{oggi.year}_Mensili.zip",
+            mime="application/zip",
+            key="dl_zip_mensile",
+        )
+
+    st.divider()
+
+    tot_unita = len(macchine)
+    completate = sum(1 for m in macchine if m.get("stato_compilazione") == "Completato")
+    da_lavorare = tot_unita - completate
+    carica_tot_flotta = sum(_safe_float(m.get("carica_kg"), 0.0) for m in macchine)
+    co2_tot_flotta = sum(_safe_float(m.get("tonn_co2_eq"), 0.0) for m in macchine)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Unità Totali", tot_unita)
+    k2.metric("Completate", completate)
+    k3.metric("Da Lavorare", da_lavorare)
+    k4.metric("CO2 Eq Totale (t)", f"{co2_tot_flotta:.2f} t")
+    st.caption(f"Carica totale refrigerante registrata: **{carica_tot_flotta:.2f} kg**")
+
+    f1, f2, f3 = st.columns([2, 1, 1])
+    with f1:
+        filtro_testo = st.text_input(
+            "🔍 Cerca per Unità, Marca, Modello, Matricola, Targa o Collocazione",
+            value="",
+        ).strip().lower()
+    with f2:
+        filtro_stato = st.selectbox(
+            "Stato", ["Tutti", "Da Lavorare", "Completato"], index=0
+        )
+    with f3:
+        filtro_gas = st.selectbox(
+            "Refrigerante",
+            ["Tutti"] + sorted({str(m.get("refrigerante") or "R-410A") for m in macchine}),
+            index=0,
+        )
+
+    filtrate = []
+    for m in macchine:
+        if filtro_stato != "Tutti" and m.get("stato_compilazione") != filtro_stato:
+            continue
+        if filtro_gas != "Tutti" and str(m.get("refrigerante") or "") != filtro_gas:
+            continue
+        if filtro_testo:
+            blob = " ".join(
+                str(m.get(k) or "")
+                for k in (
+                    "id_macchina",
+                    "nr_unita",
+                    "marca",
+                    "modello",
+                    "matricola",
+                    "collocazione",
+                    "codice_targa",
+                    "refrigerante",
+                )
+            ).lower()
+            if filtro_testo not in blob:
+                continue
+        filtrate.append(m)
+
+    st.markdown(f"**Unità visualizzate:** `{len(filtrate)}` su `{tot_unita}`")
+
+    tab_tutte, tab_da_lav, tab_comp = st.tabs(
+        [
+            f"📋 Tutte ({len(filtrate)})",
+            f"🟡 Da Lavorare ({sum(1 for x in filtrate if x.get('stato_compilazione') != 'Completato')})",
+            f"🟢 Completate ({sum(1 for x in filtrate if x.get('stato_compilazione') == 'Completato')})",
+        ]
+    )
+
+    with tab_tutte:
+        for idx, r in enumerate(filtrate):
+            render_scheda_unita(r, "all", oggi, expanded=(idx == 0 and len(filtrate) == 1))
+
+    with tab_da_lav:
+        lista_dl = [x for x in filtrate if x.get("stato_compilazione") != "Completato"]
+        for r in lista_dl:
+            render_scheda_unita(r, "dl", oggi, expanded=False)
+
+    with tab_comp:
+        lista_ok = [x for x in filtrate if x.get("stato_compilazione") == "Completato"]
+        for r in lista_ok:
+            render_scheda_unita(r, "ok", oggi, expanded=False)
+
+
+if __name__ == "__main__":
+    main()
+EOF
