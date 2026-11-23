@@ -11,9 +11,6 @@ import pandas as pd
 from PIL import Image
 import streamlit as st
 
-# ==============================================================================
-# CONFIGURAZIONE PERCORSI E COSTANTI
-# ==============================================================================
 DB_PATH = "castel_romano.db"
 EXCEL_PATH = "F_GAS_Impianti_Attivi_2026_.xlsx"
 TEMPLATE_FGAS_PATH = "Report_FGAS_modello.docx"
@@ -47,9 +44,6 @@ MESI_IT = {
 }
 
 
-# ==============================================================================
-# FUNZIONI DI UTILITÀ E CALCOLO
-# ==============================================================================
 def _safe_float(val, default=0.0):
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return float(default)
@@ -134,17 +128,13 @@ def _trova_colonna(df_cols, candidati):
         for cand in candidati:
             if cand.strip().lower() in c_low:
                 return orig
-    return None
-
-
-# ==============================================================================
-# DATABASE SQLITE & SINCRONIZZAZIONE EXCEL
-# ==============================================================================
+    return None 
 def init_db():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS macchine_hvac (
             id_macchina TEXT PRIMARY KEY,
             nr_unita TEXT,
@@ -164,7 +154,8 @@ def init_db():
             co2_circ1 REAL,
             co2_circ2 REAL
         )
-        """)
+        """
+    )
     conn.commit()
 
     cur.execute("SELECT COUNT(*) FROM macchine_hvac")
@@ -186,11 +177,22 @@ def init_db():
             )
             col_coll = _trova_colonna(
                 df_xl.columns,
-                ["collocazione", "ubicazione", "locale", "store", "punto vendita"],
+                [
+                    "collocazione",
+                    "ubicazione",
+                    "locale",
+                    "store",
+                    "punto vendita",
+                ],
             )
             col_targa = _trova_colonna(
                 df_xl.columns,
-                ["codice_targa", "targa", "cod_apparecchiatura", "apparecchiatura"],
+                [
+                    "codice_targa",
+                    "targa",
+                    "cod_apparecchiatura",
+                    "apparecchiatura",
+                ],
             )
             col_gas = _trova_colonna(
                 df_xl.columns, ["refrigerante", "gas", "fluido"]
@@ -220,23 +222,70 @@ def init_db():
 
             for idx, r in df_xl.iterrows():
                 raw_id = r[col_id] if col_id else f"MAC_{idx + 1:03d}"
-                id_m = str(raw_id).strip() if pd.notna(raw_id) and str(raw_id).strip() else f"MAC_{idx + 1:03d}"
-                nr_u = str(r[col_nr]).strip() if col_nr and pd.notna(r[col_nr]) else str(idx + 1)
-                marca = str(r[col_marca]).strip() if col_marca and pd.notna(r[col_marca]) else "N/D"
-                mod = str(r[col_mod]).strip() if col_mod and pd.notna(r[col_mod]) else "N/D"
-                matr = str(r[col_matr]).strip() if col_matr and pd.notna(r[col_matr]) else "N/D"
-                coll = str(r[col_coll]).strip() if col_coll and pd.notna(r[col_coll]) else "Castel Romano"
-                targa = str(r[col_targa]).strip() if col_targa and pd.notna(r[col_targa]) else "N/D"
-                gas = str(r[col_gas]).strip() if col_gas and pd.notna(r[col_gas]) else "R-410A"
-                carica = _safe_float(r[col_carica], 0.0) if col_carica else 0.0
+                id_m = (
+                    str(raw_id).strip()
+                    if pd.notna(raw_id) and str(raw_id).strip()
+                    else f"MAC_{idx + 1:03d}"
+                )
+                nr_u = (
+                    str(r[col_nr]).strip()
+                    if col_nr and pd.notna(r[col_nr])
+                    else str(idx + 1)
+                )
+                marca = (
+                    str(r[col_marca]).strip()
+                    if col_marca and pd.notna(r[col_marca])
+                    else "N/D"
+                )
+                mod = (
+                    str(r[col_mod]).strip()
+                    if col_mod and pd.notna(r[col_mod])
+                    else "N/D"
+                )
+                matr = (
+                    str(r[col_matr]).strip()
+                    if col_matr and pd.notna(r[col_matr])
+                    else "N/D"
+                )
+                coll = (
+                    str(r[col_coll]).strip()
+                    if col_coll and pd.notna(r[col_coll])
+                    else "Castel Romano"
+                )
+                targa = (
+                    str(r[col_targa]).strip()
+                    if col_targa and pd.notna(r[col_targa])
+                    else "N/D"
+                )
+                gas = (
+                    str(r[col_gas]).strip()
+                    if col_gas and pd.notna(r[col_gas])
+                    else "R-410A"
+                )
+                carica = (
+                    _safe_float(r[col_carica], 0.0) if col_carica else 0.0
+                )
                 co2 = (
                     _safe_float(r[col_co2], 0.0)
                     if col_co2 and pd.notna(r[col_co2])
                     else calcola_co2_tonnellate(carica, gas)
                 )
-                scad = str(r[col_scad]).strip() if col_scad and pd.notna(r[col_scad]) else ""
-                stato_raw = str(r[col_stato]).strip() if col_stato and pd.notna(r[col_stato]) else ""
-                stato = "Completato" if stato_raw.lower() in ("completato", "ok", "eseguito", "done", "completo") else "Da Lavorare"
+                scad = (
+                    str(r[col_scad]).strip()
+                    if col_scad and pd.notna(r[col_scad])
+                    else ""
+                )
+                stato_raw = (
+                    str(r[col_stato]).strip()
+                    if col_stato and pd.notna(r[col_stato])
+                    else ""
+                )
+                stato = (
+                    "Completato"
+                    if stato_raw.lower()
+                    in ("completato", "ok", "eseguito", "done", "completo")
+                    else "Da Lavorare"
+                )
 
                 ncirc = int(_safe_float(r[col_ncirc], 1)) if col_ncirc else 1
                 ncirc = 2 if ncirc == 2 else 1
@@ -281,7 +330,9 @@ def init_db():
                 )
             conn.commit()
         except Exception as e:
-            st.warning(f"Importazione iniziale da Excel parziale o non riuscita: {e}")
+            st.warning(
+                f"Importazione iniziale da Excel parziale o non riuscita: {e}"
+            )
 
     conn.close()
 
@@ -324,7 +375,9 @@ def salva_su_excel(
         nr_target = str(row_dict.get("nr_unita", "")).strip()
 
         col_id = _trova_colonna(df.columns, ["id_macchina", "id", "codice"])
-        col_nr = _trova_colonna(df.columns, ["nr_unita", "n_unita", "unita", "nr"])
+        col_nr = _trova_colonna(
+            df.columns, ["nr_unita", "n_unita", "unita", "nr"]
+        )
 
         mask = pd.Series([False] * len(df))
         if col_id:
@@ -345,8 +398,6 @@ def salva_su_excel(
             "stato_compilazione": stato_compilazione,
             "n_circuiti": int(n_circuiti),
             "carica_circ1": round(float(c1_kg), 2),
-            "carica_circ2": round(float(c2_kg),
-cat << 'EOF' >> app_fgas.py
             "carica_circ2": round(float(c2_kg), 2),
             "co2_circ1": round(float(co2_c1), 2),
             "co2_circ2": round(float(co2_c2), 2),
@@ -356,7 +407,9 @@ cat << 'EOF' >> app_fgas.py
             col_found = _trova_colonna(df.columns, [field_name])
             if col_found:
                 if df[col_found].dtype == object:
-                    df.loc[mask, col_found] = str(val) if isinstance(val, str) else val
+                    df.loc[mask, col_found] = (
+                        str(val) if isinstance(val, str) else val
+                    )
                 else:
                     df.loc[mask, col_found] = val
 
@@ -364,8 +417,6 @@ cat << 'EOF' >> app_fgas.py
         return True, f"Aggiornato {EXCEL_PATH}"
     except Exception as e:
         return False, f"Errore scrittura Excel: {e}"
-
-
 def _sostituisci_placeholder_in_testo(testo, mapping):
     for k, v in mapping.items():
         testo = testo.replace(f"{{{{{k}}}}}", str(v))
@@ -441,23 +492,26 @@ def genera_report_docx(
         else:
             doc = Document()
             doc.add_heading("RAPPORTINO DI VERIFICA IMPIANTO F-GAS", level=1)
-            doc.add_paragraph(f"Data intervento: {data_int} | Stato: {stato_compilazione}")
             doc.add_paragraph(
-                f"Unità: {row.get('nr_unita', '')} — {row.get('marca', '')} {modello} | "
-                f"Matricola: {matricola} | Targa: {codice_targa}"
+                f"Data intervento: {data_int} | Stato: {stato_compilazione}"
+            )
+            doc.add_paragraph(
+                f"Unità: {row.get('nr_unita', '')} — {row.get('marca', '')}"
+                f" {modello} | Matricola: {matricola} | Targa: {codice_targa}"
             )
             doc.add_paragraph(f"Collocazione: {row.get('collocazione', '')}")
             doc.add_paragraph(
-                f"Refrigerante: {refrigerante} (GWP {get_gwp(refrigerante):.0f}) | "
-                f"Circuiti: {n_circuiti}"
+                f"Refrigerante: {refrigerante} (GWP"
+                f" {get_gwp(refrigerante):.0f}) | Circuiti: {n_circuiti}"
             )
             doc.add_paragraph(
-                f"Circuito 1: {float(c1_kg):.2f} kg ({float(co2_c1):.2f} t CO2 eq) | "
-                f"Circuito 2: {float(c2_kg):.2f} kg ({float(co2_c2):.2f} t CO2 eq)"
+                f"Circuito 1: {float(c1_kg):.2f} kg ({float(co2_c1):.2f} t CO2"
+                f" eq) | Circuito 2: {float(c2_kg):.2f} kg ({float(co2_c2):.2f}"
+                " t CO2 eq)"
             )
             doc.add_paragraph(
-                f"Totale Carica: {float(carica_tot):.2f} kg | "
-                f"Totale CO2 Eq: {float(co2_tot):.2f} t"
+                f"Totale Carica: {float(carica_tot):.2f} kg | Totale CO2 Eq:"
+                f" {float(co2_tot):.2f} t"
             )
 
         if os.path.exists(FIRMA_PATH):
@@ -467,11 +521,15 @@ def genera_report_docx(
                 doc.add_paragraph("Firma Tecnico F-GAS:")
                 doc.add_picture(FIRMA_PATH, width=Inches(1.8))
             except Exception as e_img:
-                doc.add_paragraph(f"Firma Tecnico F-GAS: [Avviso immagine firma: {e_img}]")
+                doc.add_paragraph(
+                    f"Firma Tecnico F-GAS: [Avviso immagine firma: {e_img}]"
+                )
 
         nome_file = (
-            f"Rapportino_FGAS_Unita_{sanitize_filename(row.get('nr_unita', 'X'))}_"
-            f"{sanitize_filename(row.get('id_macchina', 'ID'))}_{oggi.strftime('%Y%m%d')}.docx"
+            "Rapportino_FGAS_Unita_"
+            f"{sanitize_filename(row.get('nr_unita', 'X'))}_"
+            f"{sanitize_filename(row.get('id_macchina', 'ID'))}_"
+            f"{oggi.strftime('%Y%m%d')}.docx"
         )
         out_path = os.path.join(OUTPUT_DIR, nome_file)
         doc.save(out_path)
@@ -497,11 +555,24 @@ def genera_zip_mensile_anno_corrente(macchine, oggi):
             nome_mese = MESI_IT.get(mese, f"Mese_{mese:02d}")
             n_circ = 2 if int(_safe_float(r.get("n_circuiti"), 1)) == 2 else 1
             carica = _safe_float(r.get("carica_kg"), 0.0)
-            co2 = _safe_float(r.get("tonn_co2_eq"), calcola_co2_tonnellate(carica, r.get("refrigerante")))
-            c1 = _safe_float(r.get("carica_circ1"), carica / 2.0 if n_circ == 2 else carica)
-            c2 = _safe_float(r.get("carica_circ2"), carica / 2.0 if n_circ == 2 else 0.0)
-            co2_1 = _safe_float(r.get("co2_circ1"), calcola_co2_tonnellate(c1, r.get("refrigerante")))
-            co2_2 = _safe_float(r.get("co2_circ2"), calcola_co2_tonnellate(c2, r.get("refrigerante")))
+            co2 = _safe_float(
+                r.get("tonn_co2_eq"),
+                calcola_co2_tonnellate(carica, r.get("refrigerante")),
+            )
+            c1 = _safe_float(
+                r.get("carica_circ1"), carica / 2.0 if n_circ == 2 else carica
+            )
+            c2 = _safe_float(
+                r.get("carica_circ2"), carica / 2.0 if n_circ == 2 else 0.0
+            )
+            co2_1 = _safe_float(
+                r.get("co2_circ1"),
+                calcola_co2_tonnellate(c1, r.get("refrigerante")),
+            )
+            co2_2 = _safe_float(
+                r.get("co2_circ2"),
+                calcola_co2_tonnellate(c2, r.get("refrigerante")),
+            )
 
             out_path, err = genera_report_docx(
                 r,
@@ -522,7 +593,10 @@ def genera_zip_mensile_anno_corrente(macchine, oggi):
                 scadenza_custom=data_str,
             )
             if out_path and os.path.exists(out_path) and not err:
-                arcname = f"{anno}_{mese:02d}_{nome_mese}/{os.path.basename(out_path)}"
+                arcname = (
+                    f"{anno}_{mese:02d}_{nome_mese}/"
+                    f"{os.path.basename(out_path)}"
+                )
                 zf.write(out_path, arcname=arcname)
                 conteggio += 1
 
@@ -800,8 +874,6 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
                     ),
                     key=f"dl_{key_id}",
                 )
-
-
 def main():
     st.set_page_config(
         page_title="Registro & Rapportini F-GAS",
@@ -844,24 +916,37 @@ def main():
     st.divider()
 
     tot_unita = len(macchine)
-    completate = sum(1 for m in macchine if m.get("stato_compilazione") == "Completato")
+    completate = sum(
+        1 for m in macchine if m.get("stato_compilazione") == "Completato"
+    )
     da_lavorare = tot_unita - completate
-    carica_tot_flotta = sum(_safe_float(m.get("carica_kg"), 0.0) for m in macchine)
-    co2_tot_flotta = sum(_safe_float(m.get("tonn_co2_eq"), 0.0) for m in macchine)
+    carica_tot_flotta = sum(
+        _safe_float(m.get("carica_kg"), 0.0) for m in macchine
+    )
+    co2_tot_flotta = sum(
+        _safe_float(m.get("tonn_co2_eq"), 0.0) for m in macchine
+    )
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Unità Totali", tot_unita)
     k2.metric("Completate", completate)
     k3.metric("Da Lavorare", da_lavorare)
     k4.metric("CO2 Eq Totale (t)", f"{co2_tot_flotta:.2f} t")
-    st.caption(f"Carica totale refrigerante registrata: **{carica_tot_flotta:.2f} kg**")
+    st.caption(
+        f"Carica totale refrigerante registrata: **{carica_tot_flotta:.2f} kg**"
+    )
 
     f1, f2, f3 = st.columns([2, 1, 1])
     with f1:
-        filtro_testo = st.text_input(
-            "🔍 Cerca per Unità, Marca, Modello, Matricola, Targa o Collocazione",
-            value="",
-        ).strip().lower()
+        filtro_testo = (
+            st.text_input(
+                "🔍 Cerca per Unità, Marca, Modello, Matricola, Targa o"
+                " Collocazione",
+                value="",
+            )
+            .strip()
+            .lower()
+        )
     with f2:
         filtro_stato = st.selectbox(
             "Stato", ["Tutti", "Da Lavorare", "Completato"], index=0
@@ -869,15 +954,22 @@ def main():
     with f3:
         filtro_gas = st.selectbox(
             "Refrigerante",
-            ["Tutti"] + sorted({str(m.get("refrigerante") or "R-410A") for m in macchine}),
+            ["Tutti"]
+            + sorted({str(m.get("refrigerante") or "R-410A") for m in macchine}),
             index=0,
         )
 
     filtrate = []
     for m in macchine:
-        if filtro_stato != "Tutti" and m.get("stato_compilazione") != filtro_stato:
+        if (
+            filtro_stato != "Tutti"
+            and m.get("stato_compilazione") != filtro_stato
+        ):
             continue
-        if filtro_gas != "Tutti" and str(m.get("refrigerante") or "") != filtro_gas:
+        if (
+            filtro_gas != "Tutti"
+            and str(m.get("refrigerante") or "") != filtro_gas
+        ):
             continue
         if filtro_testo:
             blob = " ".join(
@@ -902,63 +994,30 @@ def main():
     tab_tutte, tab_da_lav, tab_comp = st.tabs(
         [
             f"📋 Tutte ({len(filtrate)})",
-            f"🟡 Da Lavorare ({sum(1 for x in filtrate if x.get('stato_compilazione') != 'Completato')})",
-            f"🟢 Completate ({sum(1 for x in filtrate if x.get('stato_compilazione') == 'Completato')})",
+            "🟡 Da Lavorare"
+            f" ({sum(1 for x in filtrate if x.get('stato_compilazione') != 'Completato')})",
+            "🟢 Completate"
+            f" ({sum(1 for x in filtrate if x.get('stato_compilazione') == 'Completato')})",
         ]
     )
 
     with tab_tutte:
         for idx, r in enumerate(filtrate):
-            render_scheda_unita(r, "all", oggi, expanded=(idx == 0 and len(filtrate) == 1))
+            render_scheda_unita(
+                r, "all", oggi, expanded=(idx == 0 and len(filtrate) == 1)
+            )
 
     with tab_da_lav:
-        lista_dl = [x for x in filtrate if x.get("stato_compilazione") != "Completato"]
-        for r in lista_dl:
-            render_scheda_unita(r, "dl", oggi, expanded=False)
-
-    with tab_comp:
-        lista_ok = [x for x in filtrate if x.get("stato_compilazione") == "Completato"]
-        for r in lista_ok:
-            render_scheda_unita(r, "ok", oggi, expanded=False)
-
-
-if __name__ == "__main__":
-    main()
-EOF
-"nr_unita",
-                    "marca",
-                    "modello",
-                    "matricola",
-                    "collocazione",
-                    "codice_targa",
-                    "refrigerante",
-                )
-            ).lower()
-            if filtro_testo not in blob:
-                continue
-        filtrate.append(m)
-
-    st.markdown(f"**Unità visualizzate:** `{len(filtrate)}` su `{tot_unita}`")
-
-    tab_tutte, tab_da_lav, tab_comp = st.tabs(
-        [
-            f"📋 Tutte ({len(filtrate)})",
-            f"🟡 Da Lavorare ({sum(1 for x in filtrate if x.get('stato_compilazione') != 'Completato')})",
-            f"🟢 Completate ({sum(1 for x in filtrate if x.get('stato_compilazione') == 'Completato')})",
+        lista_dl = [
+            x for x in filtrate if x.get("stato_compilazione") != "Completato"
         ]
-    )
-
-    with tab_tutte:
-        for idx, r in enumerate(filtrate):
-            render_scheda_unita(r, "all", oggi, expanded=(idx == 0 and len(filtrate) == 1))
-
-    with tab_da_lav:
-        lista_dl = [x for x in filtrate if x.get("stato_compilazione") != "Completato"]
         for r in lista_dl:
             render_scheda_unita(r, "dl", oggi, expanded=False)
 
     with tab_comp:
-        lista_ok = [x for x in filtrate if x.get("stato_compilazione") == "Completato"]
+        lista_ok = [
+            x for x in filtrate if x.get("stato_compilazione") == "Completato"
+        ]
         for r in lista_ok:
             render_scheda_unita(r, "ok", oggi, expanded=False)
 
