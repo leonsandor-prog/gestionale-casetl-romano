@@ -253,13 +253,8 @@ def salva_su_excel(
         )
         df_xl = pd.read_excel(xls, sheet_name=foglio)
 
-        fgas_target = (
-            str(row_data.get("id_macchina", ""))
-            .strip()
-            .replace(".0", "")
-            if str(row_data.get("id_macchina", "")).strip().endswith(".0")
-            else str(row_data.get("id_macchina", "")).strip()
-        )
+        raw_target = str(row_data.get("id_macchina", "")).strip()
+        fgas_target = raw_target[:-2] if raw_target.endswith(".0") else raw_target
 
         col_gas = (
             "Tipo HCFC" if "Tipo HCFC" in df_xl.columns else "Refrigerante"
@@ -310,12 +305,11 @@ def salva_su_excel(
         return False, f"Errore aggiornamento Excel: {e}"
 
 
-def init_db():
-    excel_file = resolve_excel_path()
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    cursor = conn.cursor()
+def _popola_tabella_da_excel(cur, excel_file: str, ricrea_tabella: bool = False) -> int:
+    if ricrea_tabella:
+        cur.execute("DROP TABLE IF EXISTS macchine_hvac")
 
-    cursor.execute(
+    cur.execute(
         """
         CREATE TABLE IF NOT EXISTS macchine_hvac (
             id_macchina TEXT PRIMARY KEY,
@@ -340,8 +334,8 @@ def init_db():
         """
     )
 
-    cursor.execute("PRAGMA table_info(macchine_hvac)")
-    colonne_esistenti = {info[1] for info in cursor.fetchall()}
+    cur.execute("PRAGMA table_info(macchine_hvac)")
+    colonne_esistenti = {info[1] for info in cur.fetchall()}
     nuove_colonne = {
         "f_gas_attivo": "TEXT DEFAULT 'S'",
         "n_circuiti": "INTEGER DEFAULT 1",
@@ -352,143 +346,177 @@ def init_db():
     }
     for col_name, col_def in nuove_colonne.items():
         if col_name not in colonne_esistenti:
-            cursor.execute(
+            cur.execute(
                 f"ALTER TABLE macchine_hvac ADD COLUMN {col_name} {col_def}"
             )
 
-    if os.path.exists(excel_file):
-        xls = pd.ExcelFile(excel_file)
-        foglio = (
-            "Elenco di FGAS"
-            if "Elenco di FGAS" in xls.sheet_names
-            else xls.sheet_names[0]
+    if not os.path.exists(excel_file):
+        return 0
+
+    xls = pd.ExcelFile(excel_file)
+    foglio = (
+        "Elenco di FGAS"
+        if "Elenco di FGAS" in xls.sheet_names
+        else xls.sheet_names[0]
+    )
+    df_excel = pd.read_excel(xls, sheet_name=foglio)
+
+    inseriti = 0
+    for idx, row in df_excel.iterrows():
+        id_unic = get_id_macchina(row, idx)
+        collocazione = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
+        nr_unita = str(
+            row.get(
+                "Descrizione",
+                row.get("Unità / Macchina", row.get("Unità", "")),
+            )
+        ).strip()
+        marca = str(row.get("Marca", "")).strip()
+        modello = str(row.get("Modello", "")).strip()
+
+        matr_raw = row.get("Matricola", "")
+        matricola = (
+            str(matr_raw).strip()
+            if pd.notna(matr_raw) and str(matr_raw).strip()
+            else "N/D"
         )
-        df_excel = pd.read_excel(xls, sheet_name=foglio)
 
-        for idx, row in df_excel.iterrows():
-            id_unic = get_id_macchina(row, idx)
-            collocazione = str(row.get("Collocazione", "MCARTHUR_RM")).strip()
-            nr_unita = str(
-                row.get(
-                    "Descrizione",
-                    row.get("Unità / Macchina", row.get("Unità", "")),
-                )
-            ).strip()
-            marca = str(row.get("Marca", "")).strip()
-            modello = str(row.get("Modello", "")).strip()
+        gas_raw = row.get(
+            "Tipo HCFC", row.get("Refrigerante", row.get("Tipo Gas", "R-410A"))
+        )
+        refrigerante = (
+            str(gas_raw).strip()
+            if pd.notna(gas_raw) and str(gas_raw).strip()
+            else "R-410A"
+        )
 
-            matr_raw = row.get("Matricola", "")
-            matricola = (
-                str(matr_raw).strip()
-                if pd.notna(matr_raw) and str(matr_raw).strip()
-                else "N/D"
+        co2_raw = row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", None))
+        carica_col = row.get(
+            "Carica Refrigerante (kg)", row.get("Carica (kg)", None)
+        )
+
+        if pd.notna(carica_col):
+            carica_kg = round(float(carica_col), 2)
+        elif pd.notna(co2_raw):
+            carica_kg = calcola_carica_da_co2(float(co2_raw), refrigerante)
+        else:
+            carica_kg = 0.0
+
+        if pd.notna(co2_raw):
+            tonn_co2 = round(float(co2_raw), 2)
+        elif carica_kg > 0:
+            tonn_co2 = calcola_co2_tonnellate(carica_kg, refrigerante)
+        else:
+            tonn_co2 = 0.0
+
+        codice_targa = str(
+            row.get("Cod. Apparecchiatura", row.get("Codice Targa", ""))
+        ).strip()
+        scadenza = estrai_data_verifica_riga_excel(row)
+
+        fgas_raw = row.get("F-Gas?", "S")
+        f_gas_attivo = (
+            str(fgas_raw).strip().upper()
+            if pd.notna(fgas_raw) and str(fgas_raw).strip().upper() in ("S", "N")
+            else "S"
+        )
+
+        raw_ncirc = row.get("N° Circuiti", row.get("N_Circuiti", 1))
+        try:
+            n_circ = (
+                2
+                if pd.notna(raw_ncirc)
+                and str(raw_ncirc).strip() not in ("", "N.D.", "ND")
+                and int(float(str(raw_ncirc).strip())) == 2
+                else 1
             )
+        except Exception:
+            n_circ = 1
 
-            gas_raw = row.get(
-                "Tipo HCFC", row.get("Refrigerante", row.get("Tipo Gas", "R-410A"))
+        c1_val = float(
+            row.get(
+                "Carica_Circ_1_Kg",
+                carica_kg / 2 if n_circ == 2 else carica_kg,
             )
-            refrigerante = (
-                str(gas_raw).strip()
-                if pd.notna(gas_raw) and str(gas_raw).strip()
-                else "R-410A"
+            if pd.notna(row.get("Carica_Circ_1_Kg"))
+            else (carica_kg / 2 if n_circ == 2 else carica_kg)
+        )
+        c2_val = float(
+            row.get(
+                "Carica_Circ_2_Kg",
+                carica_kg / 2 if n_circ == 2 else 0.0,
             )
+            if pd.notna(row.get("Carica_Circ_2_Kg"))
+            else (carica_kg / 2 if n_circ == 2 else 0.0)
+        )
+        co2_1_val = calcola_co2_tonnellate(c1_val, refrigerante)
+        co2_2_val = (
+            calcola_co2_tonnellate(c2_val, refrigerante)
+            if n_circ == 2
+            else 0.0
+        )
 
-            co2_raw = row.get("Tonn CO2 Eq", row.get("Tonn. CO2 Eq.", None))
-            carica_col = row.get(
-                "Carica Refrigerante (kg)", row.get("Carica (kg)", None)
-            )
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO macchine_hvac
+            (id_macchina, collocazione, nr_unita, marca, modello, matricola, refrigerante, tonn_co2_eq, carica_kg, codice_targa, scadenza_verifica, f_gas_attivo, stato_compilazione, n_circuiti, carica_circ1, carica_circ2, co2_circ1, co2_circ2)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                id_unic,
+                collocazione,
+                nr_unita,
+                marca,
+                modello,
+                matricola,
+                refrigerante,
+                tonn_co2,
+                carica_kg,
+                codice_targa,
+                scadenza,
+                f_gas_attivo,
+                "Da Lavorare",
+                n_circ,
+                c1_val,
+                c2_val,
+                co2_1_val,
+                co2_2_val,
+            ),
+        )
+        inseriti += 1
 
-            if pd.notna(carica_col):
-                carica_kg = round(float(carica_col), 2)
-            elif pd.notna(co2_raw):
-                carica_kg = calcola_carica_da_co2(float(co2_raw), refrigerante)
-            else:
-                carica_kg = 0.0
+    return inseriti
 
-            if pd.notna(co2_raw):
-                tonn_co2 = round(float(co2_raw), 2)
-            elif carica_kg > 0:
-                tonn_co2 = calcola_co2_tonnellate(carica_kg, refrigerante)
-            else:
-                tonn_co2 = 0.0
 
-            codice_targa = str(
-                row.get("Cod. Apparecchiatura", row.get("Codice Targa", ""))
-            ).strip()
-            scadenza = estrai_data_verifica_riga_excel(row)
+def reset_database_da_excel() -> tuple[bool, str]:
+    """
+    Ricrea la tabella macchine_hvac su castel_romano.db partendo dall'Excel
+    con chiave primaria univoca su fgasnum.
+    """
+    excel_file = resolve_excel_path()
+    if not os.path.exists(excel_file):
+        return False, "Nessun file Excel trovato per il reset."
 
-            fgas_raw = row.get("F-Gas?", "S")
-            f_gas_attivo = (
-                str(fgas_raw).strip().upper()
-                if pd.notna(fgas_raw) and str(fgas_raw).strip().upper() in ("S", "N")
-                else "S"
-            )
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    try:
+        cur = conn.cursor()
+        inseriti = _popola_tabella_da_excel(cur, excel_file, ricrea_tabella=True)
+        conn.commit()
+    finally:
+        conn.close()
 
-            raw_ncirc = row.get("N° Circuiti", row.get("N_Circuiti", 1))
-            try:
-                n_circ = (
-                    2
-                    if pd.notna(raw_ncirc)
-                    and str(raw_ncirc).strip() not in ("", "N.D.", "ND")
-                    and int(float(str(raw_ncirc).strip())) == 2
-                    else 1
-                )
-            except Exception:
-                n_circ = 1
+    return True, f"DB resettato da '{excel_file}': {inseriti} record univoci."
 
-            c1_val = float(
-                row.get(
-                    "Carica_Circ_1_Kg",
-                    carica_kg / 2 if n_circ == 2 else carica_kg,
-                )
-                if pd.notna(row.get("Carica_Circ_1_Kg"))
-                else (carica_kg / 2 if n_circ == 2 else carica_kg)
-            )
-            c2_val = float(
-                row.get(
-                    "Carica_Circ_2_Kg",
-                    carica_kg / 2 if n_circ == 2 else 0.0,
-                )
-                if pd.notna(row.get("Carica_Circ_2_Kg"))
-                else (carica_kg / 2 if n_circ == 2 else 0.0)
-            )
-            co2_1_val = calcola_co2_tonnellate(c1_val, refrigerante)
-            co2_2_val = (
-                calcola_co2_tonnellate(c2_val, refrigerante)
-                if n_circ == 2
-                else 0.0
-            )
 
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO macchine_hvac
-                (id_macchina, collocazione, nr_unita, marca, modello, matricola, refrigerante, tonn_co2_eq, carica_kg, codice_targa, scadenza_verifica, f_gas_attivo, stato_compilazione, n_circuiti, carica_circ1, carica_circ2, co2_circ1, co2_circ2)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    id_unic,
-                    collocazione,
-                    nr_unita,
-                    marca,
-                    modello,
-                    matricola,
-                    refrigerante,
-                    tonn_co2,
-                    carica_kg,
-                    codice_targa,
-                    scadenza,
-                    f_gas_attivo,
-                    "Da Lavorare",
-                    n_circ,
-                    c1_val,
-                    c2_val,
-                    co2_1_val,
-                    co2_2_val,
-                ),
-            )
-
-    conn.commit()
-    conn.close()
+def init_db():
+    excel_file = resolve_excel_path()
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    try:
+        cur = conn.cursor()
+        _popola_tabella_da_excel(cur, excel_file, ricrea_tabella=False)
+        conn.commit()
+    finally:
+        conn.close()
     sincronizza_date_da_excel()
 
 
@@ -902,32 +930,34 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
                 st.session_state[f"c2_val_{key_id}"] = float(c2_edit)
 
                 conn_up = sqlite3.connect(DB_PATH, timeout=10.0)
-                cur_up = conn_up.cursor()
-                cur_up.execute(
-                    """
-                    UPDATE macchine_hvac
-                    SET modello = ?, matricola = ?, refrigerante = ?, carica_kg = ?, tonn_co2_eq = ?, codice_targa = ?, stato_compilazione = ?,
-                        n_circuiti = ?, carica_circ1 = ?, carica_circ2 = ?, co2_circ1 = ?, co2_circ2 = ?
-                    WHERE id_macchina = ?
-                    """,
-                    (
-                        mod_edit,
-                        matr_edit,
-                        gas_edit,
-                        carica_tot_calc,
-                        co2_tot_calc,
-                        targa_edit,
-                        stato_edit,
-                        int(n_circ_edit),
-                        float(c1_edit),
-                        float(c2_edit),
-                        float(co2_c1_calc),
-                        float(co2_c2_calc),
-                        fgas_id,
-                    ),
-                )
-                conn_up.commit()
-                conn_up.close()
+                try:
+                    cur_up = conn_up.cursor()
+                    cur_up.execute(
+                        """
+                        UPDATE macchine_hvac
+                        SET modello = ?, matricola = ?, refrigerante = ?, carica_kg = ?, tonn_co2_eq = ?, codice_targa = ?, stato_compilazione = ?,
+                            n_circuiti = ?, carica_circ1 = ?, carica_circ2 = ?, co2_circ1 = ?, co2_circ2 = ?
+                        WHERE id_macchina = ?
+                        """,
+                        (
+                            mod_edit,
+                            matr_edit,
+                            gas_edit,
+                            carica_tot_calc,
+                            co2_tot_calc,
+                            targa_edit,
+                            stato_edit,
+                            int(n_circ_edit),
+                            float(c1_edit),
+                            float(c2_edit),
+                            float(co2_c1_calc),
+                            float(co2_c2_calc),
+                            fgas_id,
+                        ),
+                    )
+                    conn_up.commit()
+                finally:
+                    conn_up.close()
 
                 ok_xl, msg_xl = salva_su_excel(
                     dict(row),
@@ -997,6 +1027,27 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
                 )
 
 
+def render_tasto_reset_db():
+    st.sidebar.divider()
+    st.sidebar.markdown("### ⚙️ Manutenzione DB")
+    conferma_reset = st.sidebar.checkbox(
+        "Conferma reset database", key="chk_conferma_reset_db"
+    )
+    if st.sidebar.button(
+        "🔄 Reset DB",
+        disabled=not conferma_reset,
+        use_container_width=True,
+        key="btn_reset_db",
+    ):
+        ok, msg = reset_database_da_excel()
+        if ok:
+            st.session_state["chk_conferma_reset_db"] = False
+            st.sidebar.success(msg)
+            st.rerun()
+        else:
+            st.sidebar.error(msg)
+
+
 init_db()
 
 st.set_page_config(page_title="CBRE GWS - F-GAS Castel Romano", layout="wide")
@@ -1011,6 +1062,8 @@ menu = st.sidebar.radio(
         "Compilazione Massiva (ZIP Mensile)",
     ],
 )
+
+render_tasto_reset_db()
 
 oggi = datetime.now()
 
