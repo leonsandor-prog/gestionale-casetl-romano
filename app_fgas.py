@@ -9,7 +9,6 @@ from datetime import datetime
 from docx import Document
 from docx.shared import Inches
 import pandas as pd
-from PIL import Image
 import streamlit as st
 
 st.set_page_config(page_title="CBRE GWS - F-GAS Castel Romano", layout="wide")
@@ -17,6 +16,8 @@ st.set_page_config(page_title="CBRE GWS - F-GAS Castel Romano", layout="wide")
 DB_PATH = "castel_romano.db"
 BACKUP_DIR = "Backup_FGAS"
 CANDIDATE_EXCEL_PATHS = [
+    "F_GAS_Impianti_Attivi_2026_ (3).xlsx",
+    "F_GAS_Impianti_Attivi_2026_ (2).xlsx",
     "F_GAS_Impianti_Attivi_2026_ (1).xlsx",
     "F_GAS_Impianti_Attivi_2026_.xlsx",
     "F-GAS Impianti attivi 2026.xlsx",
@@ -54,6 +55,9 @@ GWP_MAP = {
 
 
 def resolve_excel_path() -> str:
+    custom_path = st.session_state.get("active_excel_path")
+    if custom_path and os.path.exists(custom_path):
+        return custom_path
     for path in CANDIDATE_EXCEL_PATHS:
         if os.path.exists(path):
             return path
@@ -209,13 +213,13 @@ def sincronizza_date_da_excel():
         return
 
     try:
-        xls = pd.ExcelFile(excel_file)
-        foglio = (
-            "Elenco di FGAS"
-            if "Elenco di FGAS" in xls.sheet_names
-            else xls.sheet_names[0]
-        )
-        df_xl = pd.read_excel(xls, sheet_name=foglio)
+        with pd.ExcelFile(excel_file, engine="openpyxl") as xls:
+            foglio = (
+                "Elenco di FGAS"
+                if "Elenco di FGAS" in xls.sheet_names
+                else xls.sheet_names[0]
+            )
+            df_xl = pd.read_excel(xls, sheet_name=foglio)
 
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         try:
@@ -241,6 +245,29 @@ def sincronizza_date_da_excel():
         pass
 
 
+def _scrivi_foglio_excel_sicuro(excel_file: str, foglio: str, df_xl: pd.DataFrame):
+    """
+    Scrive il foglio aggiornato mantenendo gli altri fogli del workbook e salvando
+    su disco in modo affidabile.
+    """
+    abs_target = os.path.abspath(excel_file)
+    os.makedirs(os.path.dirname(abs_target) or ".", exist_ok=True)
+    tmp_path = f"{abs_target}.tmp_{os.getpid()}.xlsx"
+
+    with pd.ExcelFile(abs_target, engine="openpyxl") as xls:
+        all_sheets = {
+            name: pd.read_excel(xls, sheet_name=name) for name in xls.sheet_names
+        }
+
+    all_sheets[foglio] = df_xl
+
+    with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
+        for sheet_name, sheet_df in all_sheets.items():
+            sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    os.replace(tmp_path, abs_target)
+
+
 def salva_su_excel(
     row_data: dict,
     n_circ: int,
@@ -255,19 +282,22 @@ def salva_su_excel(
     gas_val: str,
     targa_val: str,
     stato_val: str,
+    desc_val: str | None = None,
+    fgas_attivo_val: str | None = None,
+    data_verifica_str: str | None = None,
 ):
     excel_file = resolve_excel_path()
     if not os.path.exists(excel_file):
-        return False, "File Excel non trovato."
+        return False, f"File Excel non trovato: {excel_file}"
 
     try:
-        xls = pd.ExcelFile(excel_file)
-        foglio = (
-            "Elenco di FGAS"
-            if "Elenco di FGAS" in xls.sheet_names
-            else xls.sheet_names[0]
-        )
-        df_xl = pd.read_excel(xls, sheet_name=foglio)
+        with pd.ExcelFile(excel_file, engine="openpyxl") as xls:
+            foglio = (
+                "Elenco di FGAS"
+                if "Elenco di FGAS" in xls.sheet_names
+                else xls.sheet_names[0]
+            )
+            df_xl = pd.read_excel(xls, sheet_name=foglio)
 
         fgas_target = _normalizza_chiave(row_data.get("id_macchina", ""))
         if not fgas_target:
@@ -308,25 +338,108 @@ def salva_su_excel(
             "Stato Lavorazione": stato_val,
         }
 
+        if desc_val is not None:
+            col_desc = (
+                "Descrizione"
+                if "Descrizione" in df_xl.columns
+                else ("Unità" if "Unità" in df_xl.columns else "Descrizione")
+            )
+            aggiornamenti[col_desc] = desc_val
+
+        if fgas_attivo_val is not None:
+            aggiornamenti["F-Gas?"] = str(fgas_attivo_val).strip().upper()
+
+        if data_verifica_str:
+            if "Data ultima verifica" in df_xl.columns:
+                aggiornamenti["Data ultima verifica"] = data_verifica_str
+
         for col_name, val in aggiornamenti.items():
             if col_name not in df_xl.columns:
                 df_xl[col_name] = None
+            df_xl[col_name] = df_xl[col_name].astype(object)
             df_xl.loc[mask, col_name] = val
 
-        with pd.ExcelWriter(
-            excel_file, engine="openpyxl", mode="a", if_sheet_exists="replace"
-        ) as writer:
-            df_xl.to_excel(writer, sheet_name=foglio, index=False)
+        _scrivi_foglio_excel_sicuro(excel_file, foglio, df_xl)
 
         n_righe = int(mask.sum())
         return (
             True,
-            f"Excel ({foglio}) aggiornato ({n_righe} riga/e) su chiave={fgas_target}.",
+            f"Excel ({foglio}) aggiornato ({n_righe} riga/e) su chiave={fgas_target} [{os.path.abspath(excel_file)}].",
         )
     except PermissionError:
-        return False, "File Excel bloccato o aperto in un altro programma."
+        return (
+            False,
+            f"File Excel bloccato o aperto altrove: {os.path.abspath(excel_file)}",
+        )
     except Exception as e:
         return False, f"Errore aggiornamento Excel: {e}"
+
+
+def salva_su_db(
+    fgas_id: str,
+    desc_val: str,
+    mod_val: str,
+    matr_val: str,
+    gas_val: str,
+    targa_val: str,
+    stato_val: str,
+    fgas_attivo_val: str,
+    n_circ: int,
+    c1_kg: float,
+    c2_kg: float,
+    co2_c1: float,
+    co2_c2: float,
+    carica_tot: float,
+    co2_tot: float,
+    data_verifica_str: str,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE macchine_hvac
+            SET nr_unita = ?,
+                modello = ?,
+                matricola = ?,
+                refrigerante = ?,
+                codice_targa = ?,
+                stato_compilazione = ?,
+                f_gas_attivo = ?,
+                n_circuiti = ?,
+                carica_circ1 = ?,
+                carica_circ2 = ?,
+                co2_circ1 = ?,
+                co2_circ2 = ?,
+                carica_kg = ?,
+                tonn_co2_eq = ?,
+                scadenza_verifica = ?
+            WHERE id_macchina = ?
+            """,
+            (
+                desc_val,
+                mod_val,
+                matr_val,
+                gas_val,
+                targa_val,
+                stato_val,
+                str(fgas_attivo_val).strip().upper(),
+                int(n_circ),
+                round(float(c1_kg), 2),
+                round(float(c2_kg), 2) if int(n_circ) == 2 else 0.0,
+                round(float(co2_c1), 2),
+                round(float(co2_c2), 2) if int(n_circ) == 2 else 0.0,
+                round(float(carica_tot), 2),
+                round(float(co2_tot), 2),
+                data_verifica_str,
+                _normalizza_chiave(fgas_id),
+            ),
+        )
+        updated = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return updated
 
 
 def _popola_tabella_da_excel(cur, excel_file: str, ricrea_tabella: bool = False) -> int:
@@ -377,13 +490,13 @@ def _popola_tabella_da_excel(cur, excel_file: str, ricrea_tabella: bool = False)
     if not os.path.exists(excel_file):
         return 0
 
-    xls = pd.ExcelFile(excel_file)
-    foglio = (
-        "Elenco di FGAS"
-        if "Elenco di FGAS" in xls.sheet_names
-        else xls.sheet_names[0]
-    )
-    df_excel = pd.read_excel(xls, sheet_name=foglio)
+    with pd.ExcelFile(excel_file, engine="openpyxl") as xls:
+        foglio = (
+            "Elenco di FGAS"
+            if "Elenco di FGAS" in xls.sheet_names
+            else xls.sheet_names[0]
+        )
+        df_excel = pd.read_excel(xls, sheet_name=foglio)
 
     inseriti = 0
     for idx, row in df_excel.iterrows():
@@ -783,6 +896,11 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
     key_id = f"{prefix}_{sanitize_filename(fgas_id)}"
     stato = row.get("stato_compilazione", "Da Lavorare")
     pallino = "🟢" if stato == "Completato" else "🟡"
+    fgas_attivo_db = (
+        str(row.get("f_gas_attivo", "S")).strip().upper()
+        if str(row.get("f_gas_attivo", "S")).strip().upper() in ("S", "N")
+        else "S"
+    )
 
     n_circ_db = (
         2
@@ -812,12 +930,14 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
             st.markdown("**Dati Impianto & Identificativi**")
             st.write(f"- **N° FGAS (`id_macchina`):** `{fgas_id}`")
             st.write(f"- **Collocazione:** `{row.get('collocazione', '')}`")
+            st.write(f"- **Descrizione / Unità:** `{row.get('nr_unita', '')}`")
             st.write(f"- **Matricola:** `{row.get('matricola', '')}`")
             st.write(f"- **Cod. Apparecchiatura:** `{row.get('codice_targa', '')}`")
             st.write(f"- **Data Verifica (Anno Corrente):** `{data_valida_str}`")
             st.write(f"- **N° Circuiti registrati:** `{n_circ_db}`")
         with c2:
             st.markdown("**Parametri F-GAS**")
+            st.write(f"- **F-Gas?:** `{fgas_attivo_db}`")
             st.write(f"- **Refrigerante:** `{row.get('refrigerante', '')}`")
             st.write(f"- **Carica Totale:** `{carica_db:.2f} kg`")
             st.write(
@@ -852,6 +972,12 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
 
         with st.form(key=f"form_{key_id}"):
             st.markdown("##### ✏️ Verifica e Modifica Dati in Campo")
+            desc_edit = st.text_input(
+                "Descrizione / Unità (es. rimuovi '- DISMESS / - DISMESSO' se attiva)",
+                value=str(row.get("nr_unita", "")),
+                key=f"desc_{key_id}",
+            )
+
             nc1, nc2, nc3 = st.columns(3)
             with nc1:
                 mod_edit = st.text_input(
@@ -897,6 +1023,12 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
                     ["Da Lavorare", "Completato"],
                     index=0 if stato == "Da Lavorare" else 1,
                     key=f"st_{key_id}",
+                )
+                fgas_attivo_edit = st.selectbox(
+                    "Flag F-Gas? (S / N)",
+                    ["S", "N"],
+                    index=0 if fgas_attivo_db == "S" else 1,
+                    key=f"fgasflag_{key_id}",
                 )
                 st.caption(
                     f"GWP applicato ({gas_edit}): **{get_gwp(gas_edit):.0f}**"
@@ -970,326 +1102,202 @@ def render_scheda_unita(row, prefix, oggi, expanded=False):
                 c2_pulito = (
                     round(float(c2_edit), 2) if int(n_circ_edit) == 2 else 0.0
                 )
-                carica_tot_pulita = round(c1_pulito + c2_pulito, 2)
-                co2_1_pulita = calcola_co2_tonnellate(c1_pulito, gas_edit)
-                co2_2_pulita = (
+                co2_1_pulito = calcola_co2_tonnellate(c1_pulito, gas_edit)
+                co2_2_pulito = (
                     calcola_co2_tonnellate(c2_pulito, gas_edit)
                     if int(n_circ_edit) == 2
                     else 0.0
                 )
-                co2_tot_pulita = round(co2_1_pulita + co2_2_pulita, 2)
-
-                conn_up = sqlite3.connect(DB_PATH, timeout=10.0)
-                try:
-                    cur_up = conn_up.cursor()
-                    cur_up.execute(
-                        """
-                        UPDATE macchine_hvac
-                        SET modello = ?, matricola = ?, refrigerante = ?, carica_kg = ?, tonn_co2_eq = ?, codice_targa = ?, stato_compilazione = ?,
-                            n_circuiti = ?, carica_circ1 = ?, carica_circ2 = ?, co2_circ1 = ?, co2_circ2 = ?
-                        WHERE id_macchina = ?
-                        """,
-                        (
-                            mod_edit.strip(),
-                            matr_edit.strip(),
-                            gas_edit,
-                            carica_tot_pulita,
-                            co2_tot_pulita,
-                            targa_edit.strip(),
-                            stato_edit,
-                            int(n_circ_edit),
-                            c1_pulito,
-                            c2_pulito,
-                            co2_1_pulita,
-                            co2_2_pulita,
-                            fgas_id,
-                        ),
-                    )
-                    aggiornate_db = cur_up.rowcount
-                    conn_up.commit()
-                finally:
-                    conn_up.close()
-
-                if aggiornate_db == 0:
-                    st.error(
-                        f"Nessun record aggiornato su SQLite per id_macchina='{fgas_id}'."
-                    )
-                    st.stop()
+                tot_kg_pulito = round(c1_pulito + c2_pulito, 2)
+                tot_co2_pulito = round(co2_1_pulito + co2_2_pulito, 2)
 
                 st.session_state[f"c1_val_{key_id}"] = c1_pulito
                 st.session_state[f"c2_val_{key_id}"] = c2_pulito
-                st.session_state[f"last_ncirc_{key_id}"] = int(n_circ_edit)
 
-                ok_xl, msg_xl = salva_su_excel(
-                    dict(row),
-                    int(n_circ_edit),
-                    c1_pulito,
-                    c2_pulito,
-                    co2_1_pulita,
-                    co2_2_pulita,
-                    carica_tot_pulita,
-                    co2_tot_pulita,
-                    mod_edit.strip(),
-                    matr_edit.strip(),
-                    gas_edit,
-                    targa_edit.strip(),
-                    stato_edit,
+                db_rows = salva_su_db(
+                    fgas_id=fgas_id,
+                    desc_val=desc_edit.strip(),
+                    mod_val=mod_edit.strip(),
+                    matr_val=matr_edit.strip(),
+                    gas_val=gas_edit,
+                    targa_val=targa_edit.strip(),
+                    stato_val=stato_edit,
+                    fgas_attivo_val=fgas_attivo_edit,
+                    n_circ=int(n_circ_edit),
+                    c1_kg=c1_pulito,
+                    c2_kg=c2_pulito,
+                    co2_c1=co2_1_pulito,
+                    co2_c2=co2_2_pulito,
+                    carica_tot=tot_kg_pulito,
+                    co2_tot=tot_co2_pulito,
+                    data_verifica_str=data_valida_str,
                 )
 
-                out_file, err_doc = genera_report_docx(
-                    dict(row),
-                    mod_edit.strip(),
-                    matr_edit.strip(),
-                    gas_edit,
-                    targa_edit.strip(),
-                    stato_edit,
-                    int(n_circ_edit),
-                    c1_pulito,
-                    c2_pulito,
-                    co2_1_pulita,
-                    co2_2_pulita,
-                    carica_tot_pulita,
-                    co2_tot_pulita,
-                    oggi,
+                ok_xl, msg_xl = salva_su_excel(
+                    row_data={"id_macchina": fgas_id},
+                    n_circ=int(n_circ_edit),
+                    c1_kg=c1_pulito,
+                    c2_kg=c2_pulito,
+                    co2_c1=co2_1_pulito,
+                    co2_c2=co2_2_pulito,
+                    carica_tot=tot_kg_pulito,
+                    co2_tot=tot_co2_pulito,
+                    mod_val=mod_edit.strip(),
+                    matr_val=matr_edit.strip(),
+                    gas_val=gas_edit,
+                    targa_val=targa_edit.strip(),
+                    stato_val=stato_edit,
+                    desc_val=desc_edit.strip(),
+                    fgas_attivo_val=fgas_attivo_edit,
+                    data_verifica_str=data_valida_str,
+                )
+
+                row_per_docx = dict(row)
+                row_per_docx["id_macchina"] = fgas_id
+                row_per_docx["nr_unita"] = desc_edit.strip()
+                out_docx, err_docx = genera_report_docx(
+                    row=row_per_docx,
+                    mod_edit=mod_edit.strip(),
+                    matr_edit=matr_edit.strip(),
+                    gas_edit=gas_edit,
+                    targa_edit=targa_edit.strip(),
+                    stato_edit=stato_edit,
+                    n_circ_edit=int(n_circ_edit),
+                    c1_edit=c1_pulito,
+                    c2_edit=c2_pulito,
+                    co2_c1_calc=co2_1_pulito,
+                    co2_c2_calc=co2_2_pulito,
+                    carica_tot_calc=tot_kg_pulito,
+                    co2_tot_calc=tot_co2_pulito,
+                    oggi=oggi,
                     data_intervento_custom=data_valida_str,
                     scadenza_custom=data_valida_str,
                 )
-                if out_file:
-                    st.session_state[f"last_generated_{key_id}"] = out_file
 
-                st.session_state[f"msg_salvataggio_{key_id}"] = (
-                    ok_xl,
-                    f"DB aggiornato ({aggiornate_db} record). {msg_xl}"
-                    + (
-                        f" | Errore DOCX: {err_doc}"
-                        if err_doc
-                        else " | Rapportino DOCX pronto."
-                    ),
-                )
+                st.session_state["last_save_feedback"] = {
+                    "db_rows": db_rows,
+                    "ok_xl": ok_xl,
+                    "msg_xl": msg_xl,
+                    "out_docx": out_docx,
+                    "err_docx": err_docx,
+                }
                 st.rerun()
 
-        esito_salvataggio = st.session_state.pop(
-            f"msg_salvataggio_{key_id}", None
+
+def main():
+    st.title("CBRE GWS — Registro F-GAS Castel Romano")
+
+    excel_attivo = resolve_excel_path()
+    with st.sidebar:
+        st.markdown("### Gestione File Excel & DB")
+        st.caption(f"File Excel attivo: `{os.path.abspath(excel_attivo)}`")
+
+        uploaded_xl = st.file_uploader(
+            "Carica/Sostituisci file Excel (.xlsx)",
+            type=["xlsx"],
+            key="uploader_excel_fgas",
         )
-        if esito_salvataggio:
-            ok_s, testo_s = esito_salvataggio
-            if ok_s:
-                st.success(testo_s)
-            else:
-                st.warning(testo_s)
-
-        last_file = st.session_state.get(f"last_generated_{key_id}")
-        if not last_file:
-            possible_path = os.path.join(
-                OUTPUT_DIR,
-                f"Report_FGAS_{sanitize_filename(fgas_id)}_{sanitize_filename(row.get('marca', ''))}_{sanitize_filename(row.get('modello', ''))}"
-                f"_Unita_{sanitize_filename(row.get('nr_unita', ''))}.docx",
+        if uploaded_xl is not None:
+            dest_xl = (
+                excel_attivo
+                if os.path.exists(excel_attivo)
+                else "F_GAS_Impianti_Attivi_2026_ (3).xlsx"
             )
-            if os.path.exists(possible_path):
-                last_file = possible_path
+            with open(dest_xl, "wb") as f:
+                f.write(uploaded_xl.getbuffer())
+            st.session_state["active_excel_path"] = dest_xl
+            st.success(f"File salvato su `{dest_xl}`")
 
-        if last_file and os.path.exists(last_file):
-            with open(last_file, "rb") as f_dl:
-                st.download_button(
-                    label=f"📥 Scarica Rapportino F-GAS Firmato ({os.path.basename(last_file)})",
-                    data=f_dl,
-                    file_name=os.path.basename(last_file),
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"btn_dl_{key_id}",
-                )
+        if st.button("🔄 Reset DB da Excel (con backup)"):
+            ok_r, msg_r = reset_database_da_excel()
+            if ok_r:
+                st.success(msg_r)
+                st.rerun()
+            else:
+                st.error(msg_r)
 
+        if os.path.exists(excel_attivo):
+            with open(excel_attivo, "rb") as f_xl:
+                xl_bytes = f_xl.read()
+            st.download_button(
+                label="⬇️ Scarica Excel Aggiornato (.xlsx)",
+                data=xl_bytes,
+                file_name=os.path.basename(excel_attivo),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_excel_aggiornato",
+            )
 
-def render_tasto_reset_db():
-    st.sidebar.divider()
-    st.sidebar.markdown("### ⚙️ Manutenzione DB")
-    conferma_reset = st.sidebar.checkbox(
-        "Conferma reset database (crea backup automatico)",
-        key="chk_conferma_reset_db",
-    )
-    if st.sidebar.button(
-        "🔄 Reset DB",
-        disabled=not conferma_reset,
-        use_container_width=True,
-        key="btn_reset_db",
-    ):
-        ok, msg = reset_database_da_excel()
-        if ok:
-            st.session_state["chk_conferma_reset_db"] = False
-            st.sidebar.success(msg)
-            st.rerun()
-        else:
-            st.sidebar.error(msg)
+    init_db()
 
-
-init_db()
-
-st.sidebar.title("CBRE GWS - Castel Romano")
-st.sidebar.markdown("### 🗂️ Registro F-GAS 2026")
-menu = st.sidebar.radio(
-    "Sezione:",
-    [
-        "Dashboard & Impianti",
-        "Scan Targhetta (Foto/Camera)",
-        "Compilazione Massiva (ZIP Mensile)",
-    ],
-)
-
-render_tasto_reset_db()
-
-oggi = datetime.now()
-
-if menu == "Dashboard & Impianti":
-    st.title("Gestione Registro & Rapportini F-GAS")
+    feedback = st.session_state.pop("last_save_feedback", None)
+    if feedback:
+        msg_docx = (
+            f"Rapportino DOCX pronto: `{feedback['out_docx']}`"
+            if feedback.get("out_docx")
+            else f"Errore DOCX: {feedback.get('err_docx')}"
+        )
+        st.success(
+            f"DB aggiornato ({feedback.get('db_rows', 0)} record). {feedback.get('msg_xl', '')} | {msg_docx}"
+        )
+        if not feedback.get("ok_xl"):
+            st.warning(feedback.get("msg_xl", ""))
 
     df_macchine = leggi_macchine_db()
+    if df_macchine.empty:
+        st.warning("Nessun impianto trovato nel database.")
+        return
 
-    search = (
-        st.text_input(
-            "🔍 Cerca per N° FGAS, Unità, Matricola, Codice Apparecchiatura (Targa), Modello o Marca:",
-            "",
-        )
-        .strip()
-        .lower()
-    )
-    if search and not df_macchine.empty:
-        df_view = df_macchine[
-            df_macchine["id_macchina"]
-            .astype(str)
-            .str.lower()
-            .str.contains(search, na=False)
-            | df_macchine["nr_unita"]
-            .astype(str)
-            .str.lower()
-            .str.contains(search, na=False)
-            | df_macchine["matricola"]
-            .astype(str)
-            .str.lower()
-            .str.contains(search, na=False)
-            | df_macchine["codice_targa"]
-            .astype(str)
-            .str.lower()
-            .str.contains(search, na=False)
-            | df_macchine["modello"]
-            .astype(str)
-            .str.lower()
-            .str.contains(search, na=False)
-            | df_macchine["marca"]
-            .astype(str)
-            .str.lower()
-            .str.contains(search, na=False)
-        ]
-    else:
-        df_view = df_macchine
-
-    completati = (
-        len(df_macchine[df_macchine["stato_compilazione"] == "Completato"])
-        if not df_macchine.empty
-        else 0
-    )
-    st.markdown(
-        f"**Impianti visualizzati: {len(df_view)} / {len(df_macchine)}** — *Completati: {completati}*"
+    oggi = datetime.now()
+    tot_impianti = len(df_macchine)
+    completati = int(
+        (df_macchine["stato_compilazione"] == "Completato").sum()
     )
 
-    for _, row in df_view.iterrows():
-        render_scheda_unita(row, prefix="dash", oggi=oggi, expanded=False)
-
-elif menu == "Scan Targhetta (Foto/Camera)":
-    st.title("Riconoscimento Impianto da Targhetta in Campo")
-    st.markdown(
-        "Inquadra la targhetta metallica della macchina: il sistema leggerà automaticamente il codice o ti permetterà di cercarlo al volo."
+    filtro_stato = st.radio(
+        "Filtro stato lavorazione",
+        options=["Tutti", "Da Lavorare", "Completato"],
+        horizontal=True,
     )
+    ricerca = st.text_input(
+        "Cerca per N° FGAS, Unità, Modello, Matricola o Targa",
+        value="",
+    ).strip().lower()
 
-    img_file = st.camera_input("Scatta foto targhetta")
-    uploaded_img = st.file_uploader(
-        "Oppure carica foto dalla galleria", type=["jpg", "jpeg", "png"]
-    )
-
-    target_img = img_file if img_file is not None else uploaded_img
-    testo_rilevato = ""
-
-    if target_img is not None:
-        image = Image.open(target_img)
-        st.image(image, caption="Targhetta acquisita", use_container_width=True)
-
-        try:
-            import pytesseract
-
-            raw_ocr = pytesseract.image_to_string(image).strip()
-            if raw_ocr:
-                parole = [
-                    p.strip() for p in raw_ocr.split() if len(p.strip()) >= 3
-                ]
-                if parole:
-                    testo_rilevato = parole[0]
-        except Exception:
-            pass
-
-    search_code = st.text_input(
-        "Cerca per N° FGAS, Matricola, Codice Apparecchiatura (Targa), Numero Unità o Modello:",
-        value=testo_rilevato,
-    ).strip()
-
-    if search_code:
-        df_all = leggi_macchine_db()
-        q = search_code.lower()
-        df_s = (
-            df_all[
-                df_all["id_macchina"].astype(str).str.lower().str.contains(q, na=False)
-                | df_all["codice_targa"]
-                .astype(str)
-                .str.lower()
-                .str.contains(q, na=False)
-                | df_all["nr_unita"].astype(str).str.lower().str.contains(q, na=False)
-                | df_all["matricola"].astype(str).str.lower().str.contains(q, na=False)
-                | df_all["modello"].astype(str).str.lower().str.contains(q, na=False)
-            ]
-            if not df_all.empty
-            else pd.DataFrame()
-        )
-
-        if not df_s.empty:
-            st.success(f"Trovate {len(df_s)} unità corrispondenti!")
-            is_single = len(df_s) == 1
-            for _, row in df_s.iterrows():
-                render_scheda_unita(
-                    row, prefix="scan", oggi=oggi, expanded=is_single
-                )
-        else:
-            st.warning(
-                "Nessuna unità trovata nel database con questo identificativo."
+    df_view = df_macchine.copy()
+    if filtro_stato != "Tutti":
+        df_view = df_view[df_view["stato_compilazione"] == filtro_stato]
+    if ricerca:
+        mask_txt = (
+            df_view.apply(
+                lambda r: ricerca
+                in " ".join(
+                    str(r.get(c, ""))
+                    for c in [
+                        "id_macchina",
+                        "nr_unita",
+                        "marca",
+                        "modello",
+                        "matricola",
+                        "codice_targa",
+                    ]
+                ).lower(),
+                axis=1,
             )
-
-elif menu == "Compilazione Massiva (ZIP Mensile)":
-    st.title("Compilazione Massiva Rapportini F-GAS (Divisi per Mese)")
-    anno_sel = st.number_input(
-        "Anno di riferimento per le date dei rapportini:",
-        min_value=2020,
-        max_value=2035,
-        value=oggi.year,
-        step=1,
-    )
-    solo_attivi = st.checkbox(
-        "Escludi impianti con F-Gas? = N (dismessi / non attivi)", value=True
-    )
-
-    if st.button("📦 Genera Archivio ZIP Diviso per Mese"):
-        with st.spinner("Generazione report .docx e archivio ZIP in corso..."):
-            zip_bytes, n_gen, err_zip = genera_zip_mensile_anno_corrente(
-                int(anno_sel), solo_fgas_attivi=solo_attivi
-            )
-            if err_zip:
-                st.error(err_zip)
-            else:
-                st.session_state["zip_mensile_bytes"] = zip_bytes
-                st.session_state["zip_mensile_count"] = n_gen
-                st.success(
-                    f"Generati **{n_gen}** rapportini univoci (chiave `fgasnum`) suddivisi per mese per l'anno **{int(anno_sel)}**."
-                )
-
-    if st.session_state.get("zip_mensile_bytes"):
-        st.download_button(
-            label=f"⬇️ Scarica ZIP Rapportini {int(anno_sel)} ({st.session_state.get('zip_mensile_count', 0)} file)",
-            data=st.session_state["zip_mensile_bytes"],
-            file_name=f"Rapportini_FGAS_{int(anno_sel)}_Mensili.zip",
-            mime="application/zip",
         )
+        df_view = df_view[mask_txt]
+
+    st.caption(
+        f"Impianti visualizzati: {len(df_view)} / {tot_impianti} — Completati: {completati}"
+    )
+
+    for idx, (_, row) in enumerate(df_view.iterrows()):
+        render_scheda_unita(
+            row=row,
+            prefix=f"v{idx}",
+            oggi=oggi,
+            expanded=False,
+        )
+
+
+if __name__ == "__main__":
+    main()
